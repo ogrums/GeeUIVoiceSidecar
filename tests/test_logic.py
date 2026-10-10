@@ -23,9 +23,9 @@ class LogicTest(unittest.TestCase):
         self.assertEqual(chosen["model"], MODEL_NAME)
         self.assertEqual(chosen["voice"], "sad")
 
-    def test_neutral_or_long_or_disabled_stays_kokoro(self):
+    def test_neutral_or_disabled_stays_kokoro_but_a_long_happy_line_does_not(self):
         self.assertEqual(route("salut", "neutral", True)["engine"], "kokoro")
-        self.assertEqual(route("a" * 200, "happy", True)["engine"], "kokoro")
+        self.assertEqual(route("a" * 200, "happy", True)["engine"], "cosyvoice")
         self.assertEqual(route("salut", "happy", False)["engine"], "kokoro")
 
 

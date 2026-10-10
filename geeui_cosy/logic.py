@@ -36,10 +36,12 @@ def instruct_for(emotion):
 
 
 def route(text, emotion, cosy_enabled):
-    """Same rule as TtsRoute in emotion-core. Neutral and long lines stay on Kokoro."""
+    """Same rule as TtsRoute. A non-neutral line uses CosyVoice when the sidecar is up.
+
+    Length does not pick the engine. The client clips to MAX_CHARS before POST.
+    """
     label = parse_label(emotion)
-    clipped = text.strip()
-    if cosy_enabled and label != "neutral" and 0 < len(clipped) <= MAX_CHARS:
+    if cosy_enabled and label != "neutral" and text.strip():
         return {
             "engine": "cosyvoice",
             "model": MODEL_NAME,
