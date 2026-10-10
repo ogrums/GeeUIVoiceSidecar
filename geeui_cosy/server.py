@@ -67,22 +67,18 @@ def load_runtime():
 
 
 def synthesize(text: str, emotion: str) -> bytes:
-    import io
-
-    import torchaudio
+    from geeui_cosy.wav import wav_bytes
 
     model = load_runtime()
     prompt = MODEL_DIR / "asset" / "zero_shot_prompt.wav"
-    chunks = []
+    last = None
     for _, speech in enumerate(
         model.inference_instruct2(text, instruct_for(emotion), str(prompt), stream=False)
     ):
-        buf = io.BytesIO()
-        torchaudio.save(buf, speech, model.sample_rate, format="wav")
-        chunks.append(buf.getvalue())
-    if not chunks:
+        last = wav_bytes(speech, model.sample_rate)
+    if not last:
         raise HTTPException(status_code=500, detail="CosyVoice returned no audio")
-    return chunks[-1]
+    return last
 
 
 @app.get("/health")

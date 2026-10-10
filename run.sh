@@ -3,8 +3,11 @@
 # Downloads FunAudioLLM/Fun-CosyVoice3-0.5B-2512, then serves FastAPI on port 13306.
 #
 # The speech runtime is the CosyVoice git repo (AutoModel), not this script.
-# Without it, /health stays up and POST /v1/audio/speech returns 503.
+# Install it into THIS venv, with Python 3.10. CosyVoice does not ship wheels for 3.14.
+# This script does not need torchaudio: it writes the WAV itself.
+# Without the runtime, /health stays up and POST /v1/audio/speech returns 503.
 #
+#   python3.10 -m venv .venv && . .venv/bin/activate
 #   git clone --recursive https://github.com/FunAudioLLM/CosyVoice.git
 #   cd CosyVoice && pip install -r requirements.txt && pip install -e .
 #   cd .. && ./run.sh
