@@ -11,7 +11,8 @@
 #   git clone --recursive https://github.com/FunAudioLLM/CosyVoice.git
 #   cd CosyVoice && pip install -r requirements.txt && cd ..
 #   ./run.sh
-# CosyVoice has no setup.py. Do not pip install -e . This script adds it to PYTHONPATH.
+# CosyVoice has no setup.py. Do not pip install -e .
+# This script writes sidecar/CosyVoice onto the venv path via a .pth file.
 set -e
 cd "$(dirname "$0")"
 PORT="${PORT:-13306}"
@@ -24,9 +25,14 @@ fi
 pip install -q -r requirements.txt
 python -m geeui_cosy.download --dir "$MODEL_DIR"
 COSY_SRC="$(pwd)/CosyVoice"
+SITE="$(python -c 'import site; print(site.getsitepackages()[0])')"
+PTH="$SITE/cosyvoice.pth"
 if [ -d "$COSY_SRC/cosyvoice" ]; then
+  printf '%s\n%s\n' "$COSY_SRC" "$COSY_SRC/third_party/Matcha-TTS" > "$PTH"
   export PYTHONPATH="$COSY_SRC:$COSY_SRC/third_party/Matcha-TTS${PYTHONPATH:+:$PYTHONPATH}"
+  echo "cosyvoice path written to $PTH"
 else
+  rm -f "$PTH"
   echo "CosyVoice source missing at $COSY_SRC. /v1/audio/speech will return 503."
 fi
 exec python -m uvicorn geeui_cosy.server:app --host 0.0.0.0 --port "$PORT"
