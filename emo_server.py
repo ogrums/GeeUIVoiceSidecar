@@ -53,6 +53,17 @@ DEFAULTS = {
     "EMO_AUDIO_LABELS": ",".join(ONNX_LABELS),
     "EMO_STT_MODEL": "Whisper-Small",
     "EMO_CHAT_MODEL": "gemma4e-flash-e2b-FLM",
+    "NANOBOT_URL": "",
+    "NANOBOT_API_KEY": "",
+    "NANOBOT_SESSION": "rux",
+    "NANOBOT_FAST": "rapide",
+    "NANOBOT_HEAVY": "lourd",
+    "NANOBOT_HEAVY_WORDS": (
+        "explique,résume,planifie,calcule,compare,écris,traduis,"
+        "pourquoi,recherche,réfléchis,prépare,apprends"
+    ),
+    "NANOBOT_HEAVY_CHARS": "200",
+    "NANOBOT_TIMEOUT": "120",
 }
 
 
@@ -85,6 +96,14 @@ def config():
         "audio_labels": env("EMO_AUDIO_LABELS"),
         "stt_model": env("EMO_STT_MODEL"),
         "chat_model": env("EMO_CHAT_MODEL"),
+        "nanobot_url": env("NANOBOT_URL").rstrip("/"),
+        "nanobot_session": env("NANOBOT_SESSION"),
+        "nanobot_fast": env("NANOBOT_FAST"),
+        "nanobot_heavy": env("NANOBOT_HEAVY"),
+        "nanobot_heavy_words": env("NANOBOT_HEAVY_WORDS"),
+        "nanobot_heavy_chars": int(env("NANOBOT_HEAVY_CHARS") or "200"),
+        "nanobot_timeout": float(env("NANOBOT_TIMEOUT") or "120"),
+        "nanobot_enabled": bool(env("NANOBOT_URL")),
     }
 
 
@@ -379,6 +398,118 @@ def log(msg):
     print(time.strftime("%H:%M:%S"), msg, flush=True)
 
 
+# --- nanobot (optional chat brain) ------------------------------------------
+
+_session_locks = {}
+_session_locks_guard = threading.Lock()
+
+
+def _session_lock(session_id):
+    """One lock per session so /model switches never interleave."""
+    with _session_locks_guard:
+        lock = _session_locks.get(session_id)
+        if lock is None:
+            lock = threading.Lock()
+            _session_locks[session_id] = lock
+        return lock
+
+
+def last_user_text(messages):
+    """Return the content of the last OpenAI-style user message."""
+    for message in reversed(messages or []):
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = []
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    parts.append(part.get("text") or "")
+                elif isinstance(part, str):
+                    parts.append(part)
+            return "".join(parts)
+        if content is None:
+            return ""
+        return str(content)
+    return ""
+
+
+def heard_emotion_prefix(now=None):
+    """Prefix the heard mood when intensity is still meaningful after decay."""
+    decay(now if now is not None else time.time())
+    if mood["intensity"] >= 0.08:
+        return f"(ton entendu : {mood['emotion']}) "
+    return ""
+
+
+def is_heavy(text, words=None, max_light=None):
+    """Heuristic: French task keywords or a long phrase => Qwen3 preset."""
+    cfg = config()
+    if max_light is None:
+        max_light = cfg["nanobot_heavy_chars"]
+    if words is None:
+        words = [w.strip().lower() for w in cfg["nanobot_heavy_words"].split(",") if w.strip()]
+    body = (text or "").strip()
+    if len(body) > max_light:
+        return True
+    lower = body.lower()
+    return any(word in lower for word in words)
+
+
+def _nanobot_headers():
+    headers = {"Content-Type": "application/json"}
+    key = env("NANOBOT_API_KEY")
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    return headers
+
+
+def _nanobot_post(payload, timeout=None):
+    """POST JSON to nanobot /chat/completions. Returns (ok, response_or_exc)."""
+    cfg = config()
+    url = cfg["nanobot_url"] + "/chat/completions"
+    if timeout is None:
+        timeout = cfg["nanobot_timeout"]
+    raw = json.dumps(payload).encode()
+    request = Request(url, data=raw, headers=_nanobot_headers(), method="POST")
+    try:
+        response = urlopen(request, timeout=timeout)
+        return True, response
+    except HTTPError as exc:
+        return False, exc
+    except Exception as exc:
+        return False, exc
+
+
+def _nanobot_command(session_id, command, timeout=30):
+    """Send a non-stream control phrase (/model …) and discard the body."""
+    ok, response = _nanobot_post(
+        {
+            "session_id": session_id,
+            "stream": False,
+            "messages": [{"role": "user", "content": command}],
+        },
+        timeout=timeout,
+    )
+    if not ok:
+        log(f"nanobot cmd fail {command!r}: {response}")
+        if hasattr(response, "close"):
+            try:
+                response.close()
+            except Exception:
+                pass
+        return False
+    try:
+        response.read()
+        return 200 <= response.status < 300
+    finally:
+        response.close()
+
+
+
+
 class Handler(BaseHTTPRequestHandler):
     def _json(self, code, payload):
         raw = json.dumps(payload).encode()
@@ -478,6 +609,128 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
+
+    def _stream_nanobot(self, response):
+        """Relay nanobot SSE; append data: [DONE] if the upstream cut short."""
+        self.send_response(response.status)
+        for name in ("Content-Type", "Cache-Control"):
+            if response.headers.get(name):
+                self.send_header(name, response.headers[name])
+        self.send_header("Transfer-Encoding", "chunked")
+        self.end_headers()
+        seen_done = False
+        try:
+            while True:
+                chunk = response.read1(16384)
+                if not chunk:
+                    break
+                if b"data: [DONE]" in chunk:
+                    seen_done = True
+                self.wfile.write(f"{len(chunk):X}\r\n".encode() + chunk + b"\r\n")
+                self.wfile.flush()
+            if not seen_done:
+                done = b"data: [DONE]\n\n"
+                self.wfile.write(f"{len(done):X}\r\n".encode() + done + b"\r\n")
+                log("nanobot stream ended without [DONE]; appended")
+            self.wfile.write(b"0\r\n\r\n")
+            self.wfile.flush()
+            return True
+        except (BrokenPipeError, ConnectionResetError):
+            log(f"{self.command} {self.path} client disconnected")
+            return True
+        except Exception as exc:
+            log(f"nanobot stream error after headers: {exc}")
+            if not seen_done:
+                try:
+                    done = b"data: [DONE]\n\n"
+                    self.wfile.write(f"{len(done):X}\r\n".encode() + done + b"\r\n")
+                    self.wfile.write(b"0\r\n\r\n")
+                    self.wfile.flush()
+                except Exception:
+                    pass
+            return True
+        finally:
+            response.close()
+
+    def _lemonade_chat(self, body, content_type, reason):
+        log(f"chat route=lemonade fallback reason={reason}")
+        self._stream(self._proxy("/v1/chat/completions", body, content_type))
+
+    def _chat_via_nanobot(self, body, content_type):
+        """Forward one user turn to nanobot; fall back to Lemonade on failure."""
+        cfg = config()
+        try:
+            data = json.loads(body.decode() or "{}")
+        except json.JSONDecodeError as exc:
+            self._lemonade_chat(body, content_type, f"bad_json:{exc}")
+            return
+        user_text = last_user_text(data.get("messages"))
+        if not user_text.strip():
+            self._lemonade_chat(body, content_type, "no_user_message")
+            return
+        prefix = heard_emotion_prefix()
+        content = prefix + user_text
+        session_id = cfg["nanobot_session"]
+        stream = bool(data.get("stream"))
+        heavy = is_heavy(user_text)
+        payload = {
+            "session_id": session_id,
+            "messages": [{"role": "user", "content": content}],
+            "stream": stream,
+        }
+        lock = _session_lock(session_id)
+        switched = False
+        client_started = False
+        with lock:
+            try:
+                if heavy:
+                    if not _nanobot_command(session_id, f"/model {cfg['nanobot_heavy']}"):
+                        raise RuntimeError("model_switch_heavy_failed")
+                    switched = True
+                log(
+                    f"chat route=nanobot session={session_id} heavy={heavy} "
+                    f"stream={stream} chars={len(content)}"
+                )
+                ok, response = _nanobot_post(payload)
+                if not ok:
+                    detail = response
+                    if hasattr(response, "read"):
+                        try:
+                            detail = f"HTTP {response.status}: {response.read()[:200]!r}"
+                        finally:
+                            response.close()
+                    raise RuntimeError(f"nanobot_post:{detail}")
+                if not 200 <= response.status < 300:
+                    try:
+                        detail = response.read()[:200]
+                    finally:
+                        response.close()
+                    raise RuntimeError(f"nanobot_status_{response.status}:{detail!r}")
+                if stream:
+                    client_started = True
+                    self._stream_nanobot(response)
+                else:
+                    try:
+                        raw = response.read()
+                        client_started = True
+                        self._raw(
+                            response.status,
+                            raw,
+                            response.headers.get("Content-Type") or "application/json",
+                        )
+                        log(f"POST {self.path} {response.status} nanobot non-stream {len(raw)}b")
+                    finally:
+                        response.close()
+            except Exception as exc:
+                if client_started:
+                    log(f"nanobot chat failed mid-stream: {exc}")
+                else:
+                    self._lemonade_chat(body, content_type, str(exc))
+            finally:
+                if switched:
+                    if not _nanobot_command(session_id, f"/model {cfg['nanobot_fast']}"):
+                        log("nanobot failed to restore fast model")
+
     def do_GET(self):
         try:
             self._get()
@@ -524,7 +777,14 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/v1/audio/transcriptions":
             self._transcribe(body)
             return
-        if path in ("/v1/chat/completions", "/v1/audio/speech"):
+        if path == "/v1/chat/completions":
+            content_type = self.headers.get("Content-Type") or "application/json"
+            if cfg.get("nanobot_enabled"):
+                self._chat_via_nanobot(body, content_type)
+            else:
+                self._stream(self._proxy(path, body, content_type))
+            return
+        if path == "/v1/audio/speech":
             self._stream(self._proxy(path, body, self.headers.get("Content-Type")))
             return
         if path == "/affect/audio":
