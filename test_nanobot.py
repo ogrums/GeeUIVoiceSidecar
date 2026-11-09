@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import time
 import os
 import threading
 import unittest
@@ -287,6 +288,10 @@ class NanobotForwardTests(unittest.TestCase):
                 }
             )
             self.assertEqual(200, status)
+            # The switch back to the fast preset runs after the reply is sent.
+            deadline = time.time() + 5
+            while len(h.nanobot.requests) < 3 and time.time() < deadline:
+                time.sleep(0.02)
             texts = [
                 json.loads(r["body"])["messages"][0]["content"] for r in h.nanobot.requests
             ]
