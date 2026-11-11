@@ -1,4 +1,3 @@
-import importlib.util
 import io
 import json
 import os
@@ -7,11 +6,8 @@ import tempfile
 import unittest
 import wave
 from unittest.mock import patch
-from pathlib import Path
 
-spec = importlib.util.spec_from_file_location("emo_server", Path(__file__).with_name("emo_server.py"))
-server = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(server)
+import emo_server as server
 
 
 class LabelTest(unittest.TestCase):
@@ -104,11 +100,6 @@ class ProviderTest(unittest.TestCase):
             ["CUDAExecutionProvider"], "custom,CPUExecutionProvider"
         ))
 
-
-if __name__ == "__main__":
-    unittest.main()
-
-
 class StatusTest(unittest.TestCase):
     def test_head_labels_override_default_and_normalize(self):
         head = {"weight": [[1.0], [2.0]], "bias": [0.0, 0.0],
@@ -124,3 +115,6 @@ class StatusTest(unittest.TestCase):
                 server._onnx_head = None
         finally:
             os.unlink(path)
+
+if __name__ == "__main__":
+    unittest.main()

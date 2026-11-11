@@ -1,0 +1,33 @@
+services:
+  sidecar:
+    build: .
+    image: geeuivoice-sidecar
+    ports:
+      - "13306:13306"
+    env_file:
+      - .env
+    volumes:
+      - models:/models
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:13306/v1/emotion/status')",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    # Si nanobot (ou Lemonade) n'écoute que sur 127.0.0.1 de l'hôte,
+    # un conteneur bridge ne peut pas l'atteindre, même via host.docker.internal.
+    # Options : lier nanobot à l'IP LAN, ou décommenter la ligne suivante
+    # (dans ce cas retirer aussi la section ports, déjà implicite en mode host) :
+    # network_mode: host
+
+volumes:
+  models:

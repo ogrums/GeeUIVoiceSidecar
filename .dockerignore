@@ -1,0 +1,12 @@
+.git
+.github
+.env
+.env.example
+models/
+__pycache__/
+*.pyc
+.venv/
+tests/
+test_*.py
+*.md
+.gitignore

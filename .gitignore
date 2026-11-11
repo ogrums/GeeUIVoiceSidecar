@@ -1,4 +1,10 @@
+.env
+models/
 __pycache__/
 *.pyc
 .venv/
-models/
+*.egg-info/
+.pytest_cache/
+tests/reports/
+tests/samples/ravdess-full/
+tests/samples/Audio_Speech_Actors_01-24.zip

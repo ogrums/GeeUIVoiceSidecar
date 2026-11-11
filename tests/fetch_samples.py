@@ -84,7 +84,7 @@ def extract(archive, names, output_dir):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output-dir", type=Path, default=Path("sidecar/tests/samples/ravdess"))
+    parser.add_argument("--output-dir", type=Path, default=Path("tests/samples/ravdess"))
     parser.add_argument("--full", action="store_true", help="Télécharger et extraire les 1440 WAV de l'archive complète")
     args = parser.parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)

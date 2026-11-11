@@ -2,7 +2,7 @@
 
 ## Objet et périmètre
 
-Cette campagne valide `sidecar/emo_server.py` et ses routes OpenAI compatibles. Le mode **mock** teste le serveur HTTP réel, lancé dans le processus de test, avec un serveur Lemonade local simulé et un classifieur déterministe. Il ne requiert ni réseau, ni ONNX Runtime, ni modèle. Le mode **live** envoie de vrais WAV à un sidecar déjà démarré.
+Cette campagne valide `emo_server.py` et ses routes OpenAI compatibles. Le mode **mock** teste le serveur HTTP réel, lancé dans le processus de test, avec un serveur Lemonade local simulé et un classifieur déterministe. Il ne requiert ni réseau, ni ONNX Runtime, ni modèle. Le mode **live** envoie de vrais WAV à un sidecar déjà démarré.
 
 La réponse de transcription attendue conserve le JSON Whisper et ajoute `emotion` (une des six émotions robot), `emotion_confidence` (nombre entre 0 et 1) et `emotion_source` (`onnx` ou `fallback`). Les labels proviennent du JSON de tête, normalisés après `/` et en minuscules ; `EMO_AUDIO_LABELS` explicite est prioritaire. Le dernier repli est `angry, disgusted, fearful, happy, neutral, other, sad, surprised, unknown`. `fearful` devient `fear`, `surprised` devient `surprise` ; `disgusted`, `other` et `unknown` deviennent `neutral`. Un WAV de moins d'une seconde renvoie `neutral` avec une confiance de 0.
 
@@ -72,14 +72,14 @@ Depuis la racine du dépôt :
 
 ```bash
 # Tout simuler, hors ligne ; sortie non nulle si au moins un cas échoue
-python3 sidecar/tests/run_emotion_tests.py --mode mock
+python3 tests/run_emotion_tests.py --mode mock
 
 # Vrais fichiers, émotion attendue lue dans manifest.csv
-python3 sidecar/tests/run_emotion_tests.py --mode live \
+python3 tests/run_emotion_tests.py --mode live \
   --url http://nimbus:13306 --stt-model Whisper-Small
 
 # Dossier explicite équivalent (valeur par défaut) :
-# --audio-dir sidecar/tests/samples/ravdess
+# --audio-dir tests/samples/ravdess
 ```
 
 Le dossier audio contient un `manifest.csv` à trois colonnes : le fichier, le label RAVDESS brut et l'émotion robot attendue.
@@ -94,7 +94,7 @@ Sans manifeste, l'émotion attendue est déduite du nom de fichier, qui doit alo
 
 Le rapport live fournit l'exactitude par label brut et par émotion robot, ainsi que la matrice de confusion robot.
 
-Les rapports `RAPPORT.md`, `resultats.json` et `rapport.html` sont créés dans `sidecar/tests/reports/<horodatage>/`. Le JSON contient les réponses détaillées, l'exactitude par émotion, la matrice de confusion et les latences. Le HTML est autonome.
+Les rapports `RAPPORT.md`, `resultats.json` et `rapport.html` sont créés dans `tests/reports/<horodatage>/`. Le JSON contient les réponses détaillées, l'exactitude par émotion, la matrice de confusion et les latences. Le HTML est autonome.
 
 ## Jeu d'échantillons réels
 
@@ -103,10 +103,10 @@ RAVDESS (Livingstone & Russo, 2018, PLoS ONE 13(5): e0196391), Zenodo **10.5281/
 ```bash
 # Téléchargement sélectif par défaut (24 WAV, nécessite remotezip)
 python3 -m pip install remotezip
-python3 sidecar/tests/fetch_samples.py --output-dir sidecar/tests/samples/ravdess
+python3 tests/fetch_samples.py --output-dir tests/samples/ravdess
 
 # Alternative : archive complète (199 Mio), extraction des 1440 WAV
-python3 sidecar/tests/fetch_samples.py --full --output-dir sidecar/tests/samples/ravdess-full
+python3 tests/fetch_samples.py --full --output-dir tests/samples/ravdess-full
 ```
 
 L'option `--full` télécharge exactement `https://zenodo.org/records/1188976/files/Audio_Speech_Actors_01-24.zip?download=1`. Aucune dépendance externe n'est requise dans ce mode. Le ZIP et les fichiers hors du petit corpus commité restent ignorés par Git.
@@ -114,7 +114,7 @@ L'option `--full` télécharge exactement `https://zenodo.org/records/1188976/fi
 ## Tests unitaires existants
 
 ```bash
-python3 -m unittest discover -s sidecar -v
+python3 -m unittest discover -s . -p 'test_*.py' -v
 ```
 
 ### Non-régression ONNX

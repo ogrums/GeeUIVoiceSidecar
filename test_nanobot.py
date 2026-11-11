@@ -1,20 +1,14 @@
 """Tests for optional nanobot chat forwarding in emo_server."""
 
-import importlib.util
 import json
 import time
 import os
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 from urllib.request import Request, urlopen
 
-spec = importlib.util.spec_from_file_location(
-    "emo_server", Path(__file__).with_name("emo_server.py")
-)
-server = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(server)
+import emo_server as server
 
 
 class RecordingHandler(BaseHTTPRequestHandler):
