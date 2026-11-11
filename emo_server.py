@@ -23,6 +23,8 @@ from urllib.error import HTTPError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
+import speaker_id
+
 LABELS = {"neutral", "happy", "sad", "angry", "fear", "surprise"}
 HALF_LIFE = 45.0
 BLEND = 0.6
@@ -67,6 +69,7 @@ DEFAULTS = {
     ),
     "NANOBOT_HEAVY_CHARS": "200",
     "NANOBOT_TIMEOUT": "120",
+    "SIDECAR_ADMIN_KEY": "",
 }
 
 
@@ -451,6 +454,58 @@ def heard_emotion_prefix(now=None):
     return ""
 
 
+_speakers = None
+_speakers_guard = threading.Lock()
+
+
+def speakers():
+    """Service « qui parle » (désactivé sans SPEAKER_MODEL)."""
+    global _speakers
+    with _speakers_guard:
+        if _speakers is None:
+            _speakers = speaker_id.Speakers()
+        return _speakers
+
+
+def set_speakers(service):
+    """Pour les tests : remplacer le service."""
+    global _speakers
+    with _speakers_guard:
+        _speakers = service
+
+
+def speaker_route(base_session, heard):
+    """(session_id, préfixe, est_invité) selon la personne courante."""
+    who = speakers().who()
+    if who is None:
+        return base_session, heard, False
+    person_id, name = who
+    tone = heard.strip()[1:-1] if heard else ""
+    if person_id == speaker_id.GUEST:
+        label = "un invité parle" + (", " + tone if tone else "")
+        return f"{base_session}-{speaker_id.GUEST}", f"({label}) ", True
+    label = f"{name} parle" + (", " + tone if tone else "")
+    return f"{base_session}-{person_id}", f"({label}) ", False
+
+
+def openai_reply(text, stream, model="rux-sidecar"):
+    """Réponse de chat fabriquée par le sidecar, au format OpenAI (JSON ou SSE)."""
+    created = int(time.time())
+    if not stream:
+        return "application/json; charset=utf-8", json.dumps({
+            "id": f"rux-{created}", "object": "chat.completion", "created": created, "model": model,
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": text},
+                         "finish_reason": "stop"}],
+        }, ensure_ascii=False).encode()
+    chunk = {"id": f"rux-{created}", "object": "chat.completion.chunk", "created": created,
+             "model": model, "choices": [{"index": 0, "delta": {"role": "assistant", "content": text},
+                                          "finish_reason": None}]}
+    end = dict(chunk, choices=[{"index": 0, "delta": {}, "finish_reason": "stop"}])
+    raw = ("data: " + json.dumps(chunk, ensure_ascii=False) + "\n\n"
+           + "data: " + json.dumps(end) + "\n\ndata: [DONE]\n\n").encode()
+    return "text/event-stream; charset=utf-8", raw
+
+
 def is_heavy(text, words=None, max_light=None):
     """Heuristic: French task keywords or a long phrase => Qwen3 preset."""
     cfg = config()
@@ -680,13 +735,21 @@ class Handler(BaseHTTPRequestHandler):
         audio = parts["file"][1]
         if "model" not in fields:
             body = _with_model_field(body, content_type, config()["stt_model"])
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=3)
         try:
             upstream = executor.submit(self._proxy, self.path.split("?")[0], body, content_type)
             def classify():
                 result = onnx_audio_vote(audio)
                 return result, getattr(_onnx_local, "source", "fallback")
             classified = executor.submit(classify)
+
+            def who():
+                try:
+                    return speakers().observe(audio)
+                except Exception as exc:
+                    log(f"speaker id failed: {type(exc).__name__}: {exc}")
+                    return None
+            identified = executor.submit(who)
             response = upstream.result()
             with response:
                 raw = response.read()
@@ -699,6 +762,9 @@ class Handler(BaseHTTPRequestHandler):
             payload["emotion"] = label
             payload["emotion_confidence"] = confidence
             payload["emotion_source"] = source
+            speaker = identified.result()
+            if speaker:
+                payload.update(speaker)
             self._json(response.status, payload)
         finally:
             executor.shutdown(wait=True)
@@ -802,6 +868,25 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             response.close()
 
+    def _local_chat(self, body):
+        """Phrases traitées par le sidecar lui-même (voix), avant nanobot ou Lemonade."""
+        try:
+            data = json.loads(body.decode() or "{}")
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return False
+        text = last_user_text(data.get("messages"))
+        try:
+            reply = speakers().handle_chat(text)
+        except Exception as exc:
+            log(f"speaker intent failed: {type(exc).__name__}: {exc}")
+            reply = None
+        if not reply:
+            return False
+        log(f"chat route=local reply={reply[:80]!r}")
+        content_type, raw = openai_reply(reply, bool(data.get("stream")))
+        self._raw(200, raw, content_type)
+        return True
+
     def _lemonade_chat(self, body, content_type, reason):
         log(f"chat route=lemonade fallback reason={reason}")
         self._stream(self._proxy("/v1/chat/completions", body, content_type))
@@ -818,9 +903,11 @@ class Handler(BaseHTTPRequestHandler):
         if not user_text.strip():
             self._lemonade_chat(body, content_type, "no_user_message")
             return
-        prefix = heard_emotion_prefix()
+        session_id, prefix, guest = speaker_route(cfg["nanobot_session"], heard_emotion_prefix())
+        if guest and speaker_id.settings()["guest_route"] == "lemonade":
+            self._lemonade_chat(body, content_type, "guest")
+            return
         content = prefix + user_text
-        session_id = cfg["nanobot_session"]
         stream = bool(data.get("stream"))
         heavy = is_heavy(user_text)
         payload = {
@@ -916,6 +1003,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/v1/emotion/status":
             self._json(200, emotion_status())
             return
+        if path == "/v1/speakers":
+            if self._admin_ok():
+                self._json(200, speakers().listing())
+            return
         if path == "/config":
             self._json(200, config())
             return
@@ -925,6 +1016,33 @@ class Handler(BaseHTTPRequestHandler):
         now = time.time()
         decay(now)
         self._json(200, {"emotion": mood["emotion"], "intensity": round(mood["intensity"], 3)})
+
+    def _admin_ok(self):
+        key = env("SIDECAR_ADMIN_KEY")
+        given = (self.headers.get("Authorization") or "").removeprefix("Bearer ").strip()
+        given = given or (self.headers.get("X-Admin-Key") or "").strip()
+        if not key:
+            self._json(403, {"error": "SIDECAR_ADMIN_KEY non défini"})
+            return False
+        if given != key:
+            self._json(401, {"error": "clé d'administration invalide"})
+            return False
+        return True
+
+    def do_DELETE(self):
+        try:
+            path = self.path.split("?")[0]
+            if not path.startswith("/v1/speakers/"):
+                self._json(404, {"error": "not found"})
+                return
+            if not self._admin_ok():
+                return
+            person = path.rsplit("/", 1)[1]
+            removed = speakers().store.delete(person)
+            self._json(200 if removed else 404, {"deleted": removed, "id": person})
+        except Exception as exc:
+            log(f"DELETE {self.path} crash {exc}")
+            self._json(500, {"error": type(exc).__name__})
 
     def do_POST(self):
         try:
@@ -947,6 +1065,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/v1/chat/completions":
             content_type = self.headers.get("Content-Type") or "application/json"
+            if self._local_chat(body):
+                return
             if cfg.get("nanobot_enabled"):
                 self._chat_via_nanobot(body, content_type)
             else:

@@ -9,8 +9,8 @@ HEAD_URL="${EMO_AUDIO_HEAD_URL:-https://huggingface.co/ziyu12345/emotion2vec_plu
 
 # Named volumes are root-owned on first create. Drop privileges after chown.
 if [ "$(id -u)" = "0" ]; then
-  mkdir -p "$MODELS_DIR"
-  chown -R sidecar:sidecar "$MODELS_DIR" /app
+  mkdir -p "$MODELS_DIR" /data
+  chown -R sidecar:sidecar "$MODELS_DIR" /app /data
   exec su -s /bin/sh sidecar -c 'exec /app/entrypoint.sh "$@"' -- "$@"
 fi
 
@@ -33,6 +33,12 @@ if [ "${EMO_AUDIO_DOWNLOAD:-1}" != "0" ]; then
   download "${EMO_AUDIO_HEAD:-$MODELS_DIR/$HEAD_NAME}" "$HEAD_URL"
 else
   echo "EMO_AUDIO_DOWNLOAD=0 : pas de téléchargement des modèles"
+fi
+
+# « Qui parle » : WeSpeaker ResNet34-LM (25 Mo, CC BY 4.0) si SPEAKER_MODEL est défini.
+SPEAKER_URL="${SPEAKER_MODEL_URL:-https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_resnet34_LM.onnx}"
+if [ -n "${SPEAKER_MODEL:-}" ] && [ "${SPEAKER_DOWNLOAD:-1}" != "0" ]; then
+  download "$SPEAKER_MODEL" "$SPEAKER_URL" || echo "échec du téléchargement : « qui parle » restera désactivé"
 fi
 
 export EMO_AUDIO_ONNX="${EMO_AUDIO_ONNX:-$MODELS_DIR/$ONNX_NAME}"
