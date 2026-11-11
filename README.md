@@ -4,9 +4,9 @@ Sidecar HTTP compatible OpenAI pour le robot RUX. Il sert de passerelle entre l�
 
 Fonctions principales :
 
-- `POST /v1/audio/transcriptions` : transcrit via Lemonade, vote une émotion audio (emotion2vec ONNX) et l’ajoute à la réponse.
+- `POST /v1/audio/transcriptions` : transcrit via Lemonade, vote une émotion audio (emotion2vec ONNX) et l’ajoute à la réponse. Le texte est nettoyé : Whisper renvoie `" texte\n"`, le sidecar renvoie `"texte"` (JSON en UTF-8, sans échappement `\u00e9`).
 - `POST /v1/chat/completions` : si `NANOBOT_URL` est défini, route vers nanobot (preset rapide ou lourd) avec repli automatique sur Lemonade ; sinon, proxy direct vers Lemonade.
-- `POST /v1/audio/speech` : proxy TTS vers Lemonade (Kokoro) ou indication de route CosyVoice via `POST /route`.
+- `POST /v1/audio/speech` : Pocket TTS d’abord si `POCKET_TTS_URL` est défini, repli Kokoro (Lemonade) en cas d’erreur ou de délai ; sinon proxy direct vers Kokoro. L’en-tête `X-TTS-Engine` (`pocket` ou `kokoro`) indique le moteur utilisé.
 - Routes d’affect (`/affect/audio`, `/affect/text`, `/mood`, `/v1/emotion/status`).
 
 Ce dépôt reprend le dossier `sidecar/` de [ogrums/GeeUIVoice](https://github.com/ogrums/GeeUIVoice) (commit `efd2cb6` de `main`) en le rendant autonome, lançable avec Docker Compose.
@@ -61,6 +61,9 @@ Les variables vides ou absentes reprennent les défauts de `emo_server.py`. `EMO
 | `KOKORO_MODEL` | `kokoro-v1` | Modèle TTS Kokoro |
 | `KOKORO_VOICE_FR` | `ff_siwis` | Voix française |
 | `KOKORO_VOICE_EN` | `af_heart` | Voix anglaise |
+| `POCKET_TTS_URL` | *(vide)* | Serveur Pocket TTS OpenAI (ex. `http://127.0.0.1:49112`). Vide = Kokoro seul |
+| `POCKET_TTS_VOICE` | `alba` | Voix Pocket par défaut (remplace une voix Kokoro française ou inconnue) |
+| `POCKET_TTS_TIMEOUT` | `20` | Délai (s) avant repli sur Kokoro |
 | `COSYVOICE_HOST` | *(vide)* | Second hôte TTS ; désactivé si vide |
 | `COSYVOICE_MODEL` | `cosyvoice2` | Modèle CosyVoice |
 | `NANOBOT_URL` | *(vide)* | Base nanobot (`…/v1`). Vide = chat directement vers Lemonade |
@@ -140,3 +143,21 @@ python -u emo_server.py
 ```
 
 Le serveur reste agnostique du matériel : ONNX Runtime choisit un accélérateur disponible, sinon le CPU.
+
+## Pocket TTS
+
+Pocket TTS (Kyutai, modèle `french_24l`) a de meilleures voix françaises que Kokoro, mais il est plus lent. Mesures sur nimbus (Ryzen AI 9 HX 470, CPU) : RTF ≈ 0,67 (2 s pour une phrase de 40 caractères, 3,6 s pour 110 caractères), contre RTF ≈ 0,16 pour Kokoro. Le premier son sort en ≈ 0,2 s si le client lit le flux WAV (`"response_format": "wav", "stream": true`) ; en MP3, il faut attendre toute la phrase.
+
+Activation (mode host) :
+
+```bash
+# dans .env
+POCKET_TTS_URL=http://127.0.0.1:49112
+POCKET_TTS_VOICE=alba
+docker compose up -d
+curl -s -D - -o /tmp/t.wav http://127.0.0.1:13306/v1/audio/speech \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"kokoro-v1","input":"Bonjour, je suis RUX.","voice":"ff_siwis","response_format":"wav"}' | grep -i x-tts-engine
+```
+
+Côté application GeeUIVoice, le chemin Kokoro appelle Lemonade directement. Pour passer par Pocket, renseigner le champ « Phonon » avec l’adresse du sidecar (`http://nimbus:13306`) et la voix voulue (`alba`, `cosette`…). Le sidecar ne transmet pas `speed` à Pocket : le lecteur du robot applique la vitesse liée à l’émotion.

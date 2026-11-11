@@ -44,6 +44,9 @@ DEFAULTS = {
     "KOKORO_VOICE_EN": "af_heart",
     "COSYVOICE_HOST": "",
     "COSYVOICE_MODEL": "cosyvoice2",
+    "POCKET_TTS_URL": "",
+    "POCKET_TTS_VOICE": "alba",
+    "POCKET_TTS_TIMEOUT": "20",
     "EMO_AUDIO_CMD": "",
     "EMO_AUDIO_MODEL": "emotion2vec",
     "EMO_AUDIO_ONNX": "",
@@ -88,6 +91,10 @@ def config():
         "cosyvoice_host": cosy.rstrip("/") if cosy else "",
         "cosyvoice_model": env("COSYVOICE_MODEL"),
         "cosyvoice_enabled": bool(cosy),
+        "pocket_tts_url": env("POCKET_TTS_URL").rstrip("/"),
+        "pocket_tts_voice": env("POCKET_TTS_VOICE"),
+        "pocket_tts_timeout": float(env("POCKET_TTS_TIMEOUT") or "20"),
+        "pocket_tts_enabled": bool(env("POCKET_TTS_URL")),
         "audio_cmd": env("EMO_AUDIO_CMD"),
         "audio_model": env("EMO_AUDIO_MODEL"),
         "audio_onnx": env("EMO_AUDIO_ONNX"),
@@ -538,11 +545,75 @@ def _nanobot_command(session_id, command, timeout=30):
 
 
 
+def clean_transcription(payload):
+    """Whisper (Lemonade) returns ' texte\n': trim `text` and segment texts in place."""
+    if not isinstance(payload, dict):
+        return payload
+    if isinstance(payload.get("text"), str):
+        payload["text"] = payload["text"].strip()
+    for segment in payload.get("segments") or []:
+        if isinstance(segment, dict) and isinstance(segment.get("text"), str):
+            segment["text"] = segment["text"].strip()
+    return payload
+
+
+KOKORO_VOICE = re.compile(r"^[a-z]{2}_[a-z0-9]+$")
+KOKORO_ENGLISH = re.compile(r"^[ab][fm]_")
+_pocket_voices = {"at": 0.0, "url": "", "names": set()}
+_pocket_voices_lock = threading.Lock()
+
+
+def pocket_voice_names(cfg):
+    """Voice ids served by Pocket TTS (GET /v1/voices), cached 5 minutes. Empty on error."""
+    url = cfg["pocket_tts_url"]
+    with _pocket_voices_lock:
+        cached = _pocket_voices
+        if cached["url"] == url and time.time() - cached["at"] < 300:
+            return cached["names"]
+        names = set()
+        try:
+            with urlopen(url + "/v1/voices", timeout=3) as response:
+                data = json.loads(response.read().decode())
+            for item in data.get("data") or data.get("voices") or []:
+                name = item.get("id") if isinstance(item, dict) else item
+                if isinstance(name, str) and name:
+                    names.add(name)
+        except Exception as exc:
+            log(f"pocket voices unavailable: {exc}")
+        cached.update({"at": time.time(), "url": url, "names": names})
+        return names
+
+
+def pocket_voice(asked, cfg, known=None):
+    """Pocket voice for a request voice, or None when the line must stay on Kokoro (English)."""
+    asked = (asked or "").strip()
+    if KOKORO_ENGLISH.match(asked):
+        return None
+    if not asked or KOKORO_VOICE.match(asked):
+        return cfg["pocket_tts_voice"]
+    names = pocket_voice_names(cfg) if known is None else known
+    return asked if asked in names else cfg["pocket_tts_voice"]
+
+
+def kokoro_body(data, cfg):
+    """Request rewritten for Lemonade Kokoro: Kokoro model and a Kokoro voice."""
+    out = dict(data)
+    model = str(out.get("model") or "")
+    if "kokoro" not in model.lower():
+        out["model"] = cfg["kokoro_model"]
+    voice = str(out.get("voice") or "")
+    if not KOKORO_VOICE.match(voice):
+        out["voice"] = cfg["kokoro_voice_fr"]
+    out.pop("stream", None)
+    return json.dumps(out, ensure_ascii=False).encode()
+
+
 class Handler(BaseHTTPRequestHandler):
     def _json(self, code, payload):
-        raw = json.dumps(payload).encode()
+        # UTF-8, not \u escapes: older app builds decode \u00e9 as "u00e9".
+        raw = json.dumps(payload, ensure_ascii=False).encode()
         self.send_response(code)
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
         self.wfile.write(raw)
@@ -564,11 +635,13 @@ class Handler(BaseHTTPRequestHandler):
         except HTTPError as exc:
             return exc
 
-    def _stream(self, response):
+    def _stream(self, response, extra_headers=None):
         self.send_response(response.status)
         for name in ("Content-Type", "Cache-Control"):
             if response.headers.get(name):
                 self.send_header(name, response.headers[name])
+        for name, value in (extra_headers or {}).items():
+            self.send_header(name, value)
         self.send_header("Transfer-Encoding", "chunked")
         self.end_headers()
         try:
@@ -622,13 +695,58 @@ class Handler(BaseHTTPRequestHandler):
                 return
             (label, confidence), source = classified.result()
             observe(label, confidence, time.time())
-            payload = json.loads(raw.decode())
+            payload = clean_transcription(json.loads(raw.decode()))
             payload["emotion"] = label
             payload["emotion_confidence"] = confidence
             payload["emotion_source"] = source
             self._json(response.status, payload)
         finally:
             executor.shutdown(wait=True)
+
+    def _speech(self, body, content_type):
+        """Pocket TTS first when POCKET_TTS_URL is set; Kokoro (Lemonade) on error or timeout."""
+        cfg = config()
+        try:
+            data = json.loads(body.decode() or "{}")
+        except (ValueError, UnicodeDecodeError):
+            data = None
+        if not isinstance(data, dict):
+            self._stream(self._proxy("/v1/audio/speech", body, content_type), {"X-TTS-Engine": "kokoro"})
+            return
+        text = str(data.get("input") or "")
+        voice = pocket_voice(data.get("voice"), cfg) if cfg["pocket_tts_enabled"] and text.strip() else None
+        if voice:
+            pocket = {
+                "model": "tts-1",
+                "input": text,
+                "voice": voice,
+                "response_format": data.get("response_format") or "mp3",
+            }
+            if "stream" in data:
+                pocket["stream"] = data["stream"]
+            started = time.time()
+            try:
+                response = urlopen(
+                    Request(
+                        cfg["pocket_tts_url"] + "/v1/audio/speech",
+                        data=json.dumps(pocket, ensure_ascii=False).encode(),
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
+                    ),
+                    timeout=cfg["pocket_tts_timeout"],
+                )
+                log(
+                    f"speech engine=pocket voice={voice} chars={len(text)} "
+                    f"headers_after={time.time() - started:.2f}s"
+                )
+                self._stream(response, {"X-TTS-Engine": "pocket"})
+                return
+            except Exception as exc:
+                log(f"speech engine=kokoro fallback reason=pocket:{exc}")
+        self._stream(
+            self._proxy("/v1/audio/speech", kokoro_body(data, cfg), "application/json"),
+            {"X-TTS-Engine": "kokoro"},
+        )
 
     def _raw(self, code, raw, content_type=None):
         self.send_response(code)
@@ -835,7 +953,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._stream(self._proxy(path, body, content_type))
             return
         if path == "/v1/audio/speech":
-            self._stream(self._proxy(path, body, self.headers.get("Content-Type")))
+            self._speech(body, self.headers.get("Content-Type"))
             return
         if path == "/affect/audio":
             label, conf = audio_vote(body)
