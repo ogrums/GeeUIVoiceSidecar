@@ -31,10 +31,21 @@ DEFAULTS = {
     "SPEAKER_ENROLL_TIMEOUT_S": "120",
     "SPEAKER_PROVIDER": "cpu",
     "SPEAKER_THREADS": "1",
-    "SPEAKER_GUEST_ROUTE": "nanobot",
+    "SPEAKER_GUEST_ROUTE": "lemonade",
+    # Rôle d'une nouvelle voix quand quelqu'un est déjà inscrit (la toute première est adulte).
+    # « enfant » par défaut : un invité ne peut pas s'inscrire lui-même comme adulte.
+    "SPEAKER_NEW_ROLE": "enfant",
+    # Balises d'action permises par rôle (noms de balises de l'app), « * » = toutes.
+    "ACTIONS_ADULTE": "*",
+    "ACTIONS_ENFANT": "volume,light,photo",
+    "ACTIONS_INVITE": "volume,light",
 }
 
 GUEST = "invite"
+ADULT = "adulte"
+CHILD = "enfant"
+ROLES = (ADULT, CHILD)
+ALL_ACTIONS = ("move", "volume", "light", "photo", "home")
 
 
 def _env(name):
@@ -60,7 +71,18 @@ def settings():
         "provider": _env("SPEAKER_PROVIDER"),
         "threads": int(_env("SPEAKER_THREADS")),
         "guest_route": _env("SPEAKER_GUEST_ROUTE").lower(),
+        "new_role": _env("SPEAKER_NEW_ROLE").lower() if _env("SPEAKER_NEW_ROLE").lower() in ROLES else CHILD,
     }
+
+
+def allowed_actions(role):
+    """Balises d'action que l'app peut exécuter pour ce rôle (None = pas de restriction)."""
+    if role is None:
+        return None
+    raw = _env({ADULT: "ACTIONS_ADULTE", CHILD: "ACTIONS_ENFANT"}.get(role, "ACTIONS_INVITE"))
+    if raw.strip() == "*":
+        return list(ALL_ACTIONS)
+    return [a for a in (x.strip().lower() for x in raw.split(",")) if a in ALL_ACTIONS]
 
 
 # --- vecteurs ---------------------------------------------------------------
@@ -199,6 +221,15 @@ class Store:
             data["people"][person_id] = record
             self._write(data)
 
+    def set_role(self, person_id, role):
+        with self._lock:
+            data = self._read()
+            if person_id not in data["people"] or role not in ROLES:
+                return False
+            data["people"][person_id]["role"] = role
+            self._write(data)
+            return True
+
     def delete(self, person_id):
         with self._lock:
             data = self._read()
@@ -216,6 +247,7 @@ _INTENTS = [
     ("enroll", re.compile(r"(?:retiens|apprends|enregistre|m[ée]morise)\s+ma\s+voix\W+(?:je\s+suis|je\s+m'appelle|c'est)\s+" + _NAME, re.I)),
     ("enroll", re.compile(r"(?:je\s+suis|je\s+m'appelle|c'est)\s+" + _NAME + r"\W+(?:retiens|apprends|enregistre|m[ée]morise)\s+ma\s+voix", re.I)),
     ("forget", re.compile(r"oublie\s+ma\s+voix", re.I)),
+    ("role", re.compile(_NAME + r"\s+est\s+(?:un|une)\s+(enfant|adulte)\b", re.I)),
     ("whoami", re.compile(r"qui\s+suis[- ]je|tu\s+me\s+reconnais|sais[- ]tu\s+qui\s+je\s+suis", re.I)),
     ("cancel", re.compile(r"^\W*(annule|laisse tomber|stop|arr[êe]te)\b", re.I)),
 ]
@@ -225,6 +257,8 @@ def parse_intent(text):
     for kind, pattern in _INTENTS:
         match = pattern.search(text or "")
         if match:
+            if kind == "role":
+                return kind, (match.group(1), match.group(2).lower())
             return kind, (match.group(1) if match.groups() else None)
     return None, None
 
@@ -265,10 +299,30 @@ class Speakers:
                 self._enroll_sample(vec, duration, now)
                 person = self.enroll or self.current
                 if person:
-                    return {"speaker": person["id"], "speaker_name": person["name"], "speaker_score": None}
+                    return self._fields({"speaker": person["id"], "speaker_name": person["name"], "speaker_score": None})
             if vec is None:
                 return None
-            return self.identify(vec, duration, now)
+            found = self.identify(vec, duration, now)
+            return self._fields(found) if found else None
+
+    def _fields(self, found):
+        role = self.role_of(found["speaker"])
+        return {**found, "speaker_role": role, "allowed_actions": allowed_actions(role)}
+
+    def role_of(self, person_id):
+        """« adulte », « enfant » ou « invite ». Une voix inscrite sans rôle (avant cette version) est adulte."""
+        if person_id is None or person_id == GUEST:
+            return GUEST
+        person = self.store.people().get(person_id)
+        if person is None:
+            return GUEST
+        role = person.get("role") or ADULT
+        return role if role in ROLES else GUEST
+
+    def role(self):
+        """Rôle de la personne courante, ou None quand la reconnaissance est éteinte (pas de restriction)."""
+        who = self.who()
+        return None if who is None else self.role_of(who[0])
 
     def identify(self, vec, duration, now):
         with self._lock:
@@ -324,7 +378,7 @@ class Speakers:
             "samples": len(samples),
             "enrolled_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now)),
             "consent": "voice",
-            "role": "adulte",
+            "role": ADULT if not self.store.people() else self.cfg.get("new_role", CHILD),
         })
         self.current = {"id": pid, "name": name, "score": 1.0, "at": now}
         self.reply = f"[happy] C'est noté, {name}. Je te reconnaîtrai maintenant."
@@ -355,6 +409,8 @@ class Speakers:
                 return self._forget()
             if kind == "whoami":
                 return self._whoami()
+            if kind == "role":
+                return self._set_role(*arg)
         return None
 
     def _start_enroll(self, raw_name, now):
@@ -371,6 +427,21 @@ class Speakers:
         n = self.cfg["enroll_samples"]
         return (f"[happy] D'accord {name}. Je garde juste une empreinte de ta voix, pas l'enregistrement. "
                 f"Dis-moi {n} phrases, une à la fois, d'au moins deux secondes.")
+
+    def _set_role(self, raw_name, role):
+        """« Léa est une enfant » : seulement pour une voix connue, dit par un adulte connu.
+        Une autre phrase de cette forme (« mon fils est un enfant ») part à nanobot."""
+        pid = slug(display_name(raw_name))
+        people = self.store.people()
+        if pid not in people:
+            return None
+        cur = self.current
+        if not cur or self.role_of(cur["id"]) != ADULT:
+            return "[neutral] Seul un adulte dont je connais la voix peut me dire ça."
+        if pid == cur["id"] and role != ADULT:
+            return "[neutral] Je ne peux pas te retirer toi-même tes droits d'adulte, demande à un autre adulte."
+        self.store.set_role(pid, role)
+        return f"[happy] C'est noté : pour moi, {people[pid]['name']} est {role}."
 
     def _forget(self):
         cur = self.current

@@ -143,6 +143,16 @@ python3 tests/fetch_samples.py      # extraits RAVDESS
 SPEAKER_TEST_MODEL=/chemin/wespeaker_en_voxceleb_resnet34_LM.onnx python3 -m unittest test_speaker -v
 ```
 
+## Mode enfant / invité
+
+Chaque voix inscrite a un rôle dans `speakers.json` : `adulte` ou `enfant`. Une voix inconnue est `invite`.
+
+- **Inscription** : la toute première voix est `adulte`. Les suivantes reçoivent `SPEAKER_NEW_ROLE` (`enfant` par défaut), pour qu'un invité ne puisse pas s'inscrire lui-même comme adulte. Un adulte reconnu change un rôle à la voix : « Marie est une adulte », « Léa est une enfant ». La phrase n'est interceptée que si le prénom est une voix connue, sinon elle part à nanobot. Pour l'admin : `curl -X POST -H "Authorization: Bearer $KEY" -d '{"role":"enfant"}' http://nimbus:13306/v1/speakers/lea/role`.
+- **STT** : `/v1/audio/transcriptions` ajoute `speaker_role` et `allowed_actions` (balises d'action que l'app a le droit d'exécuter, réglées par `ACTIONS_ADULTE`, `ACTIONS_ENFANT` et `ACTIONS_INVITE`). C'est l'app qui filtre, dans son code ; le modèle ne décide pas.
+- **Enfant** : session `rux-<prénom>`, préfixe « (Léa parle, c'est un enfant) » ; la soul adapte le vocabulaire et refuse la maison. Par défaut pas de marche ni de retour à la base.
+- **Invité** : `SPEAKER_GUEST_ROUTE=lemonade` par défaut, donc pas de nanobot : pas de mémoire, pas d'outils (web, maison), seulement le modèle de chat. Avec `nanobot`, session `rux-invite` et la règle « rien d'écrit » du Dream.
+- Sans reconnaissance de la voix (`SPEAKER_MODEL` vide, ou personne d'inscrit) : rien ne change, pas de `allowed_actions`, l'app ne filtre pas.
+
 ## Tests
 
 Depuis la racine du dépôt (Python 3.9+, bibliothèque standard pour les unitaires ; `onnxruntime` et `numpy` sont optionnels, déjà dans `requirements.txt`) :
