@@ -146,6 +146,10 @@ python3 tests/fetch_samples.py      # extraits RAVDESS
 SPEAKER_TEST_MODEL=/chemin/wespeaker_en_voxceleb_resnet34_LM.onnx python3 -m unittest test_speaker -v
 ```
 
+## Souvenirs : « oublie tout sur moi »
+
+La mémoire est dans nanobot (`USER.md`, `memory/MEMORY.md`, skill `oublie`, voir `deploy/nanobot` de GeeUIVoice). Après un « oui » à « oublie tout sur moi », nanobot termine sa réponse par `[oubli:voix]`. Le sidecar lit cette balise dans le flux et efface l'empreinte vocale de la personne qui parle (jamais pour un invité). L'app ne lit pas la balise à voix haute.
+
 ## Initiative (le robot parle le premier)
 
 Optionnel : `INITIATIVE_ENABLED=1`. Le sidecar décide quand parler, nanobot écrit quoi dire (session de la personne, message « (initiative de RUX, personne n'a parlé) … »). Si nanobot ne répond pas, une phrase toute faite.

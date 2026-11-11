@@ -540,6 +540,22 @@ def set_initiative(service):
         _initiative = service
 
 
+FORGET_VOICE_TAG = re.compile(r"\[oubli:\s*voix\s*\]", re.I)
+
+
+def after_reply(text, person):
+    """Balises lues dans la réponse de nanobot : [rappel:…] et [oubli:voix] (skill « oublie »)."""
+    try:
+        initiative().reminders_from_reply(text, person)
+    except Exception as exc:
+        log(f"reminder tag failed: {type(exc).__name__}: {exc}")
+    if person and FORGET_VOICE_TAG.search(text or ""):
+        removed = speakers().store.delete(person)
+        if removed and speakers().current and speakers().current.get("id") == person:
+            speakers().current = None
+        log(f"forget voice person={person} removed={removed}")
+
+
 def speaker_route(base_session, heard):
     """(session_id, préfixe, est_invité) selon la personne courante."""
     who = speakers().who()
@@ -1034,7 +1050,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._relayed = bytearray()
                     self._stream_nanobot(response, head)
                     relayed, self._relayed = bytes(self._relayed), None
-                    initiative().reminders_from_reply(_sse_text(relayed)[0], person)
+                    after_reply(_sse_text(relayed)[0], person)
                 else:
                     try:
                         raw = response.read()
@@ -1045,7 +1061,7 @@ class Handler(BaseHTTPRequestHandler):
                         if nanobot_error_text(reply):
                             raise RuntimeError(f"nanobot_llm_error:{reply.strip()[:120]}")
                         client_started = True
-                        initiative().reminders_from_reply(reply, person)
+                        after_reply(reply, person)
                         self._raw(
                             response.status,
                             raw,
