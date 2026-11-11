@@ -115,6 +115,29 @@ Le sidecar se rabat sur Lemonade lorsque :
 
 Sans `NANOBOT_URL`, le chat est toujours proxifié vers Lemonade.
 
+## Vision à la demande
+
+Quand on demande « qu'est-ce que tu vois ? » ou « lis ça », l'app prend **une** photo et l'ajoute au tour de conversation, au format OpenAI :
+
+```json
+{"role": "user", "content": [
+  {"type": "text", "text": "qu'est-ce que tu vois ?"},
+  {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}}]}
+```
+
+Le sidecar demande une description à `VISION_MODEL` (sur `VISION_URL`, par défaut `LEMONADE_HOST`), puis remplace l'image par du texte : « (RUX voit : une tasse rouge sur un bureau…) qu'est-ce que tu vois ? ». nanobot et le modèle rapide restent en texte seul, l'historique de nanobot ne contient jamais d'image. La photo n'est ni écrite sur disque ni journalisée (le log affiche `(image)`).
+
+Sans `VISION_MODEL`, ou si le modèle ne répond pas, nanobot reçoit « (RUX a voulu regarder mais n'a pas pu : …) » et le dit simplement.
+
+Choix : la roadmap prévoyait une route `POST /v1/robot/see`. Une image dans `/v1/chat/completions` garde un seul appel côté app, la même voie (nanobot, repli Lemonade, streaming), et n'importe quel client OpenAI peut l'utiliser.
+
+Vérifier le modèle à la main :
+
+```bash
+IMG=$(base64 -w0 photo.jpg)
+curl -s $LEMONADE_HOST/chat/completions -H 'Content-Type: application/json' -d '{"model":"Gemma-4-E2B-it-GGUF","max_tokens":200,"messages":[{"role":"user","content":[{"type":"text","text":"Décris la photo en français."},{"type":"image_url","image_url":{"url":"data:image/jpeg;base64,'$IMG'"}}]}]}' | jq -r '.choices[0].message.content'
+```
+
 ## Tests
 
 Depuis la racine du dépôt (Python 3.9+, bibliothèque standard pour les unitaires ; `onnxruntime` et `numpy` sont optionnels, déjà dans `requirements.txt`) :

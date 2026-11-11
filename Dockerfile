@@ -8,7 +8,7 @@ RUN pip install --no-cache-dir -r requirements.txt \
     && mkdir -p /models \
     && chown sidecar:sidecar /models
 
-COPY emo_server.py entrypoint.sh ./
+COPY *.py entrypoint.sh ./
 RUN chmod 755 entrypoint.sh && chown sidecar:sidecar emo_server.py entrypoint.sh
 
 EXPOSE 13306
