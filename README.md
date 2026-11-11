@@ -126,8 +126,6 @@ Campagne d’émotion mock (sans réseau ni modèle) et live : voir [tests/CAHIE
 python3 tests/run_emotion_tests.py --mode mock
 ```
 
-Un workflow GitHub Actions lance les tests unitaires à chaque poussée.
-
 ## Sans Docker
 
 ```bash
