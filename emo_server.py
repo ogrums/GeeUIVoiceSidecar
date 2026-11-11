@@ -24,6 +24,7 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 import initiative as initiative_mod
+import robot_mood
 import speaker_id
 
 LABELS = {"neutral", "happy", "sad", "angry", "fear", "surprise"}
@@ -556,6 +557,29 @@ def after_reply(text, person):
         log(f"forget voice person={person} removed={removed}")
 
 
+_robot_mood = None
+
+
+def robot_mood_state():
+    """Humeur de RUX (désactivée sans ROBOT_MOOD_ENABLED=1). La nuit = heures calmes."""
+    global _robot_mood
+    with _initiative_guard:
+        if _robot_mood is None:
+            _robot_mood = robot_mood.RobotMood(night=lambda stamp: _night(stamp))
+        return _robot_mood
+
+
+def _night(stamp):
+    service = initiative()
+    return service.quiet(service.local(stamp))
+
+
+def set_robot_mood(service):
+    global _robot_mood
+    with _initiative_guard:
+        _robot_mood = service
+
+
 def speaker_route(base_session, heard):
     """(session_id, préfixe, est_invité) selon la personne courante."""
     who = speakers().who()
@@ -997,7 +1021,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         who = speakers().who()
         person = who[0] if who and who[0] != speaker_id.GUEST else None
-        content = prefix + initiative().user_turn(person) + user_text
+        missed = robot_mood_state().user_turn(user_text, mood["emotion"] if mood["intensity"] >= 0.08 else "neutral")
+        content = (robot_mood_state().prefix(missed) + prefix + initiative().user_turn(person) + user_text)
         stream = bool(data.get("stream"))
         heavy = is_heavy(user_text)
         payload = {
@@ -1098,7 +1123,13 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, emotion_status())
             return
         if path == "/v1/robot/pending":
-            self._json(200, {"items": initiative().items()})
+            payload = {"items": initiative().items()}
+            if robot_mood_state().cfg["enabled"]:
+                payload["mood"] = robot_mood_state().snapshot()
+            self._json(200, payload)
+            return
+        if path == "/v1/robot/mood":
+            self._json(200, {"enabled": robot_mood_state().cfg["enabled"], **robot_mood_state().snapshot()})
             return
         if path == "/v1/speakers":
             if self._admin_ok():
