@@ -99,6 +99,7 @@ Les variables vides ou absentes reprennent les défauts de `emo_server.py`. `EMO
 | `POST` | `/route` | Choisit Kokoro ou CosyVoice selon l’émotion et la longueur |
 | `GET` | `/v1/speakers` | Personnes enregistrées, sans empreinte (clé `SIDECAR_ADMIN_KEY`) |
 | `GET` | `/v1/robot/pending` | Phrases que le robot peut dire de lui-même (`{"items": [...]}`) |
+| `GET` | `/v1/robot/mood` | Humeur de RUX : `label`, `content`, `energy` |
 | `POST` | `/v1/robot/ack` | `{"id": …, "status": "spoken" \| "skipped"}` après la phrase |
 | `POST` | `/v1/robot/event` | Présence (toucher, capteur) : `{"type": "touch"}` |
 | `DELETE` | `/v1/speakers/<id>` | Efface l’empreinte d’une personne (clé `SIDECAR_ADMIN_KEY`) |
@@ -171,6 +172,12 @@ Garde-fous : `INITIATIVE_MAX_PER_DAY` par personne, `INITIATIVE_MIN_GAP_MIN` ent
 curl http://nimbus:13306/v1/robot/pending
 curl -X POST -H 'Content-Type: application/json' -d '{"id":"…","status":"spoken"}' http://nimbus:13306/v1/robot/ack
 ```
+
+## Humeur de RUX
+
+Optionnel : `ROBOT_MOOD_ENABLED=1`. Deux valeurs lentes (demi-vie `ROBOT_MOOD_HALF_LIFE_H`) : le contentement monte quand on lui parle (beaucoup avec « merci », « bravo », « t'es trop mignon »), baisse avec « t'es nul » ou un ton triste ou fâché ; l'énergie baisse la nuit (heures calmes). Seul depuis `ROBOT_MOOD_BORED_H` heures en journée : ennuyé, puis boudeur.
+
+`label` : `joyeux`, `content`, `calme`, `fatigue`, `ennuye`, `boudeur`, `triste`. Si l'humeur n'est pas ordinaire, le message à nanobot commence par « (humeur de RUX : un peu boudeur) » ; au retour après `ROBOT_MOOD_MISS_H` heures : « (humeur de RUX : content de revoir quelqu'un après une longue absence) ». `/v1/robot/pending` renvoie aussi `mood` : l'app choisit le visage au repos. Les règles sont dans `robot_mood.py`, pas dans le modèle. État dans `ROBOT_MOOD_FILE` (survit à un redémarrage).
 
 ## Tests
 
