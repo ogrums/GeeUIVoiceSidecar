@@ -23,6 +23,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
+import initiative as initiative_mod
 import speaker_id
 
 LABELS = {"neutral", "happy", "sad", "angry", "fear", "surprise"}
@@ -474,6 +475,71 @@ def set_speakers(service):
         _speakers = service
 
 
+_initiative = None
+_initiative_guard = threading.Lock()
+
+
+def _session_for(person):
+    base = config()["nanobot_session"]
+    return f"{base}-{person}" if person else base
+
+
+def _initiative_generate(person, instruction):
+    """nanobot écrit la phrase d'initiative dans la session de la personne. None si impossible."""
+    if not config()["nanobot_enabled"]:
+        return None
+    session_id = _session_for(person)
+    content = "(initiative de RUX, personne n'a parlé) " + instruction
+    with _session_lock(session_id):
+        ok, response = _nanobot_post({"session_id": session_id, "stream": False,
+                                      "messages": [{"role": "user", "content": content}]})
+        if not ok:
+            log(f"initiative nanobot fail: {response}")
+            return None
+        try:
+            reply = json.loads(response.read())["choices"][0]["message"].get("content") or ""
+        except (ValueError, KeyError, IndexError, TypeError):
+            reply = ""
+        finally:
+            response.close()
+    if not reply.strip() or nanobot_error_text(reply):
+        return None
+    return reply.strip()
+
+
+def _initiative_command(person, text):
+    if not config()["nanobot_enabled"]:
+        return False
+    session_id = _session_for(person)
+    with _session_lock(session_id):
+        done = _nanobot_command(session_id, text, timeout=600)
+    log(f"nightly {text} session={session_id} ok={done}")
+    return done
+
+
+def _people_names():
+    try:
+        return {pid: p.get("name", pid) for pid, p in speakers().store.people().items()}
+    except Exception:
+        return {}
+
+
+def initiative():
+    """Planificateur d'initiative (désactivé sans INITIATIVE_ENABLED=1)."""
+    global _initiative
+    with _initiative_guard:
+        if _initiative is None:
+            _initiative = initiative_mod.Initiative(
+                generate=_initiative_generate, people=_people_names, command=_initiative_command)
+        return _initiative
+
+
+def set_initiative(service):
+    global _initiative
+    with _initiative_guard:
+        _initiative = service
+
+
 def speaker_route(base_session, heard):
     """(session_id, préfixe, est_invité) selon la personne courante."""
     who = speakers().who()
@@ -765,6 +831,7 @@ class Handler(BaseHTTPRequestHandler):
             speaker = identified.result()
             if speaker:
                 payload.update(speaker)
+                initiative().record_emotion(speaker.get("speaker"), label, confidence)
             self._json(response.status, payload)
         finally:
             executor.shutdown(wait=True)
@@ -832,6 +899,9 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         seen_done = False
         try:
+            relayed = getattr(self, "_relayed", None)
+            if relayed is not None:
+                relayed += head
             if head:
                 seen_done = b"data: [DONE]" in head
                 self.wfile.write(f"{len(head):X}\r\n".encode() + head + b"\r\n")
@@ -842,6 +912,8 @@ class Handler(BaseHTTPRequestHandler):
                     break
                 if b"data: [DONE]" in chunk:
                     seen_done = True
+                if relayed is not None:
+                    relayed += chunk
                 self.wfile.write(f"{len(chunk):X}\r\n".encode() + chunk + b"\r\n")
                 self.wfile.flush()
             if not seen_done:
@@ -876,9 +948,9 @@ class Handler(BaseHTTPRequestHandler):
             return False
         text = last_user_text(data.get("messages"))
         try:
-            reply = speakers().handle_chat(text)
+            reply = speakers().handle_chat(text) or initiative().phrase(text)
         except Exception as exc:
-            log(f"speaker intent failed: {type(exc).__name__}: {exc}")
+            log(f"local intent failed: {type(exc).__name__}: {exc}")
             reply = None
         if not reply:
             return False
@@ -907,7 +979,9 @@ class Handler(BaseHTTPRequestHandler):
         if guest and speaker_id.settings()["guest_route"] == "lemonade":
             self._lemonade_chat(body, content_type, "guest")
             return
-        content = prefix + user_text
+        who = speakers().who()
+        person = who[0] if who and who[0] != speaker_id.GUEST else None
+        content = prefix + initiative().user_turn(person) + user_text
         stream = bool(data.get("stream"))
         heavy = is_heavy(user_text)
         payload = {
@@ -957,7 +1031,10 @@ class Handler(BaseHTTPRequestHandler):
                         response.close()
                         raise RuntimeError(f"nanobot_llm_error:{text.strip()[:120]}")
                     client_started = True
+                    self._relayed = bytearray()
                     self._stream_nanobot(response, head)
+                    relayed, self._relayed = bytes(self._relayed), None
+                    initiative().reminders_from_reply(_sse_text(relayed)[0], person)
                 else:
                     try:
                         raw = response.read()
@@ -968,6 +1045,7 @@ class Handler(BaseHTTPRequestHandler):
                         if nanobot_error_text(reply):
                             raise RuntimeError(f"nanobot_llm_error:{reply.strip()[:120]}")
                         client_started = True
+                        initiative().reminders_from_reply(reply, person)
                         self._raw(
                             response.status,
                             raw,
@@ -1002,6 +1080,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/v1/emotion/status":
             self._json(200, emotion_status())
+            return
+        if path == "/v1/robot/pending":
+            self._json(200, {"items": initiative().items()})
             return
         if path == "/v1/speakers":
             if self._admin_ok():
@@ -1086,6 +1167,22 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             self._json(400, {"error": "bad json", "body": body.decode(errors="replace")[:200]})
             return
+        if path == "/v1/robot/ack":
+            item = initiative().ack(data.get("id"), (data.get("status") or "spoken").lower())
+            if item and item.get("person") and data.get("status", "spoken") == "spoken":
+                # La réponse à l'initiative part dans la session de cette personne.
+                people = _people_names()
+                if item["person"] in people:
+                    speakers().current = {"id": item["person"], "name": people[item["person"]],
+                                          "score": None, "at": time.time()}
+            self._json(200 if item else 404, {"ok": bool(item)})
+            return
+        if path == "/v1/robot/event":
+            who = speakers().who()
+            person = who[0] if who and who[0] != speaker_id.GUEST else None
+            initiative().presence(person)
+            self._json(200, {"ok": True, "person": person, "type": data.get("type")})
+            return
         if path == "/affect/text":
             label = parse_label(data.get("label") or data.get("emotion"))
             observe(label, data.get("confidence", 0.7), now)
@@ -1124,6 +1221,7 @@ if __name__ == "__main__":
     log(f"listen 0.0.0.0:{cfg['bind_port']} advertised {cfg['emo_host']}")
     log(json.dumps(cfg))
     eager_load_onnx()
+    initiative().start()
     server = ThreadingHTTPServer(("0.0.0.0", cfg["bind_port"]), Handler)
     try:
         server.serve_forever()
