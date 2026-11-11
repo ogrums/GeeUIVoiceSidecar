@@ -23,6 +23,8 @@ from urllib.error import HTTPError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
+import skills_admin
+
 LABELS = {"neutral", "happy", "sad", "angry", "fear", "surprise"}
 HALF_LIFE = 45.0
 BLEND = 0.6
@@ -899,6 +901,41 @@ class Handler(BaseHTTPRequestHandler):
                     if not _nanobot_command(session_id, f"/model {cfg['nanobot_fast']}"):
                         log("nanobot failed to restore fast model")
 
+    def _admin_skills(self, path):
+        """Page /admin/skills (skills learned by voice). Returns True when handled."""
+        if path != "/admin/skills" and not path.startswith("/admin/skills/"):
+            return False
+        admin = skills_admin.Skills()
+        if not admin.enabled:
+            self._json(404, {"error": "SIDECAR_ADMIN_KEY et NANOBOT_WORKSPACE requis"})
+            return True
+        if not admin.authorized(self.headers.get("Authorization")):
+            self.send_response(401)
+            self.send_header("WWW-Authenticate", 'Basic realm="RUX", charset="UTF-8"')
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return True
+        message = ""
+        if self.command == "POST":
+            # Basic auth is sent by the browser on any site's form: same-origin only.
+            origin = self.headers.get("Origin") or self.headers.get("Referer") or ""
+            host = self.headers.get("Host") or ""
+            if origin and urlparse(origin).netloc != host:
+                self._json(403, {"error": "origine refusée"})
+                return True
+            parts = path.strip("/").split("/")
+            if len(parts) != 4 or parts[3] not in ("approve", "reject"):
+                self._json(404, {"error": "not found"})
+                return True
+            name, action = parts[2], parts[3]
+            ok, message = admin.approve(name) if action == "approve" else admin.reject(name)
+            log(f"admin skills {action} {name} ok={ok} {message}")
+        elif path != "/admin/skills":
+            self._json(404, {"error": "not found"})
+            return True
+        self._raw(200, admin.page(message), "text/html; charset=utf-8")
+        return True
+
     def do_GET(self):
         try:
             self._get()
@@ -909,6 +946,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _get(self):
         path = self.path.split("?")[0]
+        if self._admin_skills(path):
+            return
         if path == "/v1/models":
             with self._proxy(path) as response:
                 self._raw(response.status, response.read(), response.headers.get("Content-Type"))
@@ -942,6 +981,8 @@ class Handler(BaseHTTPRequestHandler):
         log(f"POST {path} from {self.client_address[0]} {length}b {preview!r}")
         now = time.time()
         cfg = config()
+        if self._admin_skills(path):
+            return
         if path == "/v1/audio/transcriptions":
             self._transcribe(body)
             return

@@ -8,6 +8,10 @@ services:
       - .env
     volumes:
       - models:/models
+      # Skills appris à la voix (page /admin/skills) : brouillons et skills du workspace nanobot,
+      # en écriture. Adapter le chemin au dossier data/ de nanobot.
+      # - /home/bob/nanobot/data/workspace/brouillons:/nanobot-workspace/brouillons
+      # - /home/bob/nanobot/data/workspace/skills:/nanobot-workspace/skills
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
