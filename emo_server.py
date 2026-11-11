@@ -466,6 +466,34 @@ def _nanobot_headers():
     return headers
 
 
+# nanobot answers HTTP 200 even when its LLM call fails, with the error as the reply
+# text (providers/base.py, openai_compat_provider.py). Treat those as failures.
+NANOBOT_ERROR_PREFIXES = ("Error calling LLM", "Error: ")
+
+
+def nanobot_error_text(text):
+    return bool(text) and text.lstrip().startswith(NANOBOT_ERROR_PREFIXES)
+
+
+def _sse_text(buffer):
+    """Concatenate delta contents seen so far in an SSE buffer; True if [DONE] seen."""
+    text, done = "", False
+    for line in buffer.split(b"\n"):
+        line = line.strip()
+        if not line.startswith(b"data:"):
+            continue
+        data = line[5:].strip()
+        if data == b"[DONE]":
+            done = True
+            continue
+        try:
+            for choice in json.loads(data).get("choices", []):
+                text += (choice.get("delta") or {}).get("content") or ""
+        except (ValueError, AttributeError):
+            pass
+    return text, done
+
+
 def _nanobot_post(payload, timeout=None):
     """POST JSON to nanobot /chat/completions. Returns (ok, response_or_exc)."""
     cfg = config()
@@ -610,7 +638,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(raw)
 
 
-    def _stream_nanobot(self, response):
+    def _stream_nanobot(self, response, head=b""):
         """Relay nanobot SSE; append data: [DONE] if the upstream cut short."""
         self.send_response(response.status)
         for name in ("Content-Type", "Cache-Control"):
@@ -620,6 +648,10 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         seen_done = False
         try:
+            if head:
+                seen_done = b"data: [DONE]" in head
+                self.wfile.write(f"{len(head):X}\r\n".encode() + head + b"\r\n")
+                self.wfile.flush()
             while True:
                 chunk = response.read1(16384)
                 if not chunk:
@@ -707,11 +739,29 @@ class Handler(BaseHTTPRequestHandler):
                         response.close()
                     raise RuntimeError(f"nanobot_status_{response.status}:{detail!r}")
                 if stream:
+                    # Hold the first bytes back until the reply text shows it is not an
+                    # LLM error, so we can still fall back to Lemonade.
+                    head = b""
+                    while True:
+                        chunk = response.read1(16384)
+                        head += chunk
+                        text, done = _sse_text(head)
+                        if not chunk or done or len(text.strip()) >= 20:
+                            break
+                    if nanobot_error_text(text):
+                        response.close()
+                        raise RuntimeError(f"nanobot_llm_error:{text.strip()[:120]}")
                     client_started = True
-                    self._stream_nanobot(response)
+                    self._stream_nanobot(response, head)
                 else:
                     try:
                         raw = response.read()
+                        try:
+                            reply = json.loads(raw)["choices"][0]["message"].get("content") or ""
+                        except (ValueError, KeyError, IndexError, TypeError):
+                            reply = ""
+                        if nanobot_error_text(reply):
+                            raise RuntimeError(f"nanobot_llm_error:{reply.strip()[:120]}")
                         client_started = True
                         self._raw(
                             response.status,

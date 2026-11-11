@@ -92,6 +92,24 @@ class FakeUpstream:
             handler.end_headers()
             handler.wfile.write(raw)
             return
+        if self.mode == "llm_error":
+            err = "Error calling LLM: Connection error."
+            if stream:
+                handler.send_response(200)
+                handler.send_header("Content-Type", "text/event-stream")
+                handler.end_headers()
+                handler.wfile.write(
+                    b'data: {"choices":[{"delta":{"content":"' + err.encode() + b'"}}]}\n\n'
+                )
+                handler.wfile.write(b"data: [DONE]\n\n")
+                return
+            raw = json.dumps({"choices": [{"message": {"role": "assistant", "content": err}}]}).encode()
+            handler.send_response(200)
+            handler.send_header("Content-Type", "application/json")
+            handler.send_header("Content-Length", str(len(raw)))
+            handler.end_headers()
+            handler.wfile.write(raw)
+            return
         if stream:
             chunks = [
                 b'data: {"id":"1","choices":[{"delta":{"content":"[happy] Salut"}}]}\n\n',
@@ -343,6 +361,20 @@ class NanobotForwardTests(unittest.TestCase):
             self.assertEqual(200, status)
             self.assertIn(b"[happy] Salut", body)
             self.assertIn(b"data: [DONE]", body)
+
+    def test_fallback_on_llm_error_text(self):
+        for stream in (False, True):
+            with self.subTest(stream=stream), SidecarHarness(
+                {"NANOBOT_URL": "AUTO", "NANOBOT_API_KEY": "k"}
+            ) as h:
+                h.nanobot.mode = "llm_error"
+                status, body, _ = h.post_chat(
+                    {"stream": stream, "messages": [{"role": "user", "content": "bonjour"}]}
+                )
+                self.assertEqual(200, status)
+                self.assertIn(b"lemonade", body)
+                self.assertNotIn(b"Error calling LLM", body)
+                self.assertEqual(1, len(h.lemonade.requests))
 
 
 if __name__ == "__main__":
