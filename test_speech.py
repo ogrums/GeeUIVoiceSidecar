@@ -167,6 +167,44 @@ class HelperTests(unittest.TestCase):
         self.assertEqual({"text": "voiture"}, server.clean_transcription({"text": " voiture\n"}))
         self.assertEqual("x", server.clean_transcription("x"))
 
+    def test_nonspeech_transcript_is_dropped(self):
+        cases = [
+            "[MUSIC]",
+            "[Musique]",
+            "(musique)",
+            "[Applause]",
+            "[BLANK_AUDIO]",
+            "♪",
+            "♪♪♪",
+            "♪ musique ♪",
+            "[MUSIC] [Applause]",
+            " (musique) \n [MUSIC] ",
+            "Sous-titres réalisés par la communauté d'Amara.org",
+            "Sous-titres realises par l'Amara.org",
+        ]
+        for raw in cases:
+            with self.subTest(raw=raw):
+                self.assertTrue(server.is_nonspeech_transcript(raw), raw)
+                self.assertEqual("", server.clean_transcription({"text": raw})["text"])
+
+    def test_speech_with_annotation_is_kept(self):
+        kept = [
+            "J'aime la musique",
+            "[MUSIC] et ensuite une phrase",
+            "Il y a (musique) dans le jardin",
+            "Bonjour",
+            "",
+            "  ",
+        ]
+        for raw in kept:
+            with self.subTest(raw=raw):
+                self.assertFalse(server.is_nonspeech_transcript(raw), raw)
+        # Empty / whitespace stays empty after trim, and is not classified as
+        # a non-speech annotation (the app already treats empty as no turn).
+        self.assertEqual("J'aime la musique", server.clean_transcription({"text": " J'aime la musique\n"})["text"])
+        self.assertEqual("[MUSIC] et ensuite une phrase", server.clean_transcription({"text": "[MUSIC] et ensuite une phrase"})["text"])
+        self.assertEqual("", server.clean_transcription({"text": "  \n"})["text"])
+
     def test_json_reply_keeps_accents_as_utf8(self):
         self.assertIn("é", json.dumps({"t": "é"}, ensure_ascii=False))
 
