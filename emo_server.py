@@ -550,7 +550,8 @@ def speaker_route(base_session, heard):
     if person_id == speaker_id.GUEST:
         label = "un invité parle" + (", " + tone if tone else "")
         return f"{base_session}-{speaker_id.GUEST}", f"({label}) ", True
-    label = f"{name} parle" + (", " + tone if tone else "")
+    child = speakers().role_of(person_id) == speaker_id.CHILD
+    label = f"{name} parle" + (", c'est un enfant" if child else "") + (", " + tone if tone else "")
     return f"{base_session}-{person_id}", f"({label}) ", False
 
 
@@ -1110,6 +1111,21 @@ class Handler(BaseHTTPRequestHandler):
             return False
         return True
 
+    def _set_role_route(self, path, body):
+        """POST /v1/speakers/<id>/role {"role": "enfant"|"adulte"} (clé d'administration)."""
+        if not self._admin_ok():
+            return
+        person = path.split("/")[3]
+        try:
+            role = str(json.loads(body.decode() or "{}").get("role") or "").lower()
+        except (ValueError, UnicodeDecodeError, AttributeError):
+            role = ""
+        if role not in speaker_id.ROLES:
+            self._json(400, {"error": "role : adulte ou enfant"})
+            return
+        ok = speakers().store.set_role(person, role)
+        self._json(200 if ok else 404, {"id": person, "role": role if ok else None})
+
     def do_DELETE(self):
         try:
             path = self.path.split("?")[0]
@@ -1143,6 +1159,9 @@ class Handler(BaseHTTPRequestHandler):
         cfg = config()
         if path == "/v1/audio/transcriptions":
             self._transcribe(body)
+            return
+        if path.startswith("/v1/speakers/") and path.endswith("/role") and path.count("/") == 4:
+            self._set_role_route(path, body)
             return
         if path == "/v1/chat/completions":
             content_type = self.headers.get("Content-Type") or "application/json"
