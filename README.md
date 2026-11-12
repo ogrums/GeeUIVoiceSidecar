@@ -117,6 +117,23 @@ Le sidecar se rabat sur Lemonade lorsque :
 
 Sans `NANOBOT_URL`, le chat est toujours proxifié vers Lemonade.
 
+## Skills appris à la voix
+
+« Apprends à … » : nanobot résume le skill, demande « je l'enregistre ? », puis écrit un **brouillon** dans `brouillons/<nom>/SKILL.md` de son workspace (nanobot ne le charge pas). Un humain le valide sur la page `http://<hôte>:13306/admin/skills` :
+
+- mot de passe : `SIDECAR_ADMIN_KEY` (authentification HTTP Basic du navigateur, nom quelconque ; `curl -H "Authorization: Bearer $KEY"` marche aussi) ;
+- **Valider** déplace le dossier dans `skills/<nom>/` : nanobot le lit au tour suivant, sans redémarrage ;
+- **Refuser** supprime le brouillon ;
+- un brouillon sans en-tête `name:`, ou avec une balise hors de la liste de `AGENTS.md` (`[move:forward]`, `[light:off]`, `[photo]`, émotions…), n'a pas de bouton Valider ;
+- les formulaires n'acceptent que la même origine (pas de validation depuis un autre site ouvert dans le navigateur).
+
+Il faut `NANOBOT_WORKSPACE` et les deux dossiers montés en écriture (`docker-compose.yml`, lignes commentées). En Docker rootless, le conteneur (uid 1000) doit pouvoir écrire dans `brouillons/` et `skills/`.
+
+En ligne de commande :
+
+```bash
+curl -s -H "Authorization: Bearer $KEY" http://nimbus:13306/admin/skills | sed 's/<[^>]*>/ /g'
+curl -s -X POST -H "Authorization: Bearer $KEY" http://nimbus:13306/admin/skills/bonne-nuit/approve | grep -o "« bonne-nuit »[^<]*"
 ## Vision à la demande
 
 Quand on demande « qu'est-ce que tu vois ? » ou « lis ça », l'app prend **une** photo et l'ajoute au tour de conversation, au format OpenAI :
