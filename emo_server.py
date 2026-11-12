@@ -25,7 +25,7 @@ from urllib.request import Request, urlopen
 
 import speaker_id
 
-LABELS = {"neutral", "happy", "sad", "angry", "fear", "surprise"}
+LABELS = {"neutral", "happy", "sad", "angry", "fear", "surprise", "disgusted"}
 HALF_LIFE = 45.0
 BLEND = 0.6
 MAX_CHARS = 180
@@ -136,12 +136,32 @@ def _with_model_field(body, content_type, model):
 
 
 def parse_label(raw):
+    """Map a model label onto LABELS. The ONNX class `disgusted` is kept as-is."""
     key = (raw or "").strip().lower()
     aliases = {"cheerful": "happy", "joy": "happy", "sadness": "sad",
                "anger": "angry", "afraid": "fear", "fearful": "fear",
-               "surprised": "surprise"}
+               "surprised": "surprise", "disgust": "disgusted"}
     key = aliases.get(key, key)
     return key if key in LABELS else "neutral"
+
+
+def record_vote(label, confidence, source, raw=None, raw_confidence=None):
+    """Remember the raw top ONNX class (before parse_label) on the worker thread."""
+    _onnx_local.source = source
+    _onnx_local.raw = raw if raw is not None else label
+    _onnx_local.raw_confidence = raw_confidence if raw_confidence is not None else confidence
+    return label, confidence
+
+
+def vote_fields(label, confidence, source, raw=None, raw_confidence=None):
+    """Fields added to a transcription payload. `emotion` is parse_label; `emotion_raw` is the ONNX class."""
+    return {
+        "emotion": label,
+        "emotion_confidence": confidence,
+        "emotion_source": source,
+        "emotion_raw": raw if raw is not None else label,
+        "emotion_raw_confidence": raw_confidence if raw_confidence is not None else confidence,
+    }
 
 
 def decay(now):
@@ -198,8 +218,7 @@ def onnx_audio_vote(wav):
                 raise ValueError("expected 16 kHz, mono, 16-bit PCM WAV")
             frames = pcm.getnframes()
             if frames < rate:
-                _onnx_local.source = "fallback"
-                return "neutral", 0.0
+                return record_vote("neutral", 0.0, "fallback")
             samples = pcm.readframes(frames)
         signal = np.frombuffer(samples, dtype="<i2").astype(np.float32) / 32768.0
         # Silence ou quasi-silence : emotion2vec répond n'importe quoi (ex. surprise à 98 %).
@@ -207,8 +226,7 @@ def onnx_audio_vote(wav):
         usable = signal[: len(signal) // 320 * 320].reshape(-1, 320)
         loudest = float(np.sqrt(np.mean(np.square(usable), axis=1)).max()) if usable.size else 0.0
         if loudest < float(env("EMO_MIN_RMS") or 0):
-            _onnx_local.source = "silence"
-            return "neutral", 0.0
+            return record_vote("neutral", 0.0, "silence")
         session, names = _onnx_session(model)
         inputs = {names[0]: signal.reshape(1, -1)}
         if len(names) == 2:
@@ -218,8 +236,8 @@ def onnx_audio_vote(wav):
         confidence, index = softmax(logits)
         with _onnx_lock:
             _onnx_stats["classifications"] += 1
-        _onnx_local.source = "onnx"
-        return parse_label(_onnx_labels()[index]), confidence
+        raw_label = _onnx_labels()[index]
+        return record_vote(parse_label(raw_label), confidence, "onnx", raw_label, confidence)
     except Exception as exc:
         _record_onnx_error(exc)
         return _fallback_audio(wav)
@@ -247,8 +265,8 @@ def _record_onnx_error(exc):
 
 
 def _fallback_audio(wav):
-    _onnx_local.source = "fallback"
-    return audio_command_vote(wav)
+    label, confidence = audio_command_vote(wav)
+    return record_vote(label, confidence, "fallback")
 
 
 def classify_logits(output):
@@ -740,7 +758,12 @@ class Handler(BaseHTTPRequestHandler):
             upstream = executor.submit(self._proxy, self.path.split("?")[0], body, content_type)
             def classify():
                 result = onnx_audio_vote(audio)
-                return result, getattr(_onnx_local, "source", "fallback")
+                return (
+                    result,
+                    getattr(_onnx_local, "source", "fallback"),
+                    getattr(_onnx_local, "raw", result[0]),
+                    getattr(_onnx_local, "raw_confidence", result[1]),
+                )
             classified = executor.submit(classify)
 
             def who():
@@ -756,12 +779,10 @@ class Handler(BaseHTTPRequestHandler):
             if not 200 <= response.status < 300:
                 self._raw(response.status, raw, response.headers.get("Content-Type"))
                 return
-            (label, confidence), source = classified.result()
+            (label, confidence), source, raw_label, raw_confidence = classified.result()
             observe(label, confidence, time.time())
             payload = clean_transcription(json.loads(raw.decode()))
-            payload["emotion"] = label
-            payload["emotion_confidence"] = confidence
-            payload["emotion_source"] = source
+            payload.update(vote_fields(label, confidence, source, raw_label, raw_confidence))
             speaker = identified.result()
             if speaker:
                 payload.update(speaker)
