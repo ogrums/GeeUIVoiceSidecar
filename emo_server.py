@@ -621,15 +621,57 @@ def _nanobot_command(session_id, command, timeout=30):
 
 
 
+_BRACKET_ANN = re.compile(r"\[[^\[\]]*\]|\([^()]*\)")
+_MUSIC_MARK = re.compile(r"[♪♫♬♩🎵🎶]+")
+_NONSPEECH_PUNCT = ".,;:!?-–—•·\'\""
+# Whisper credits, optional: "Sous-titres réalisés par la communauté d'Amara.org"
+_SUBTITLE_CREDIT = re.compile(
+    r"(?i)\bsous-titres?\s+r[ée]alis[ée]s?\s+par\b.*$",
+)
+# Leftover tokens after marks are stripped, e.g. "♪ musique ♪".
+_NONSPEECH_WORD = re.compile(
+    r"(?i)^(musique|music|m[uú]sica|applause|applaudissements?|"
+    r"silence|blank[\s_-]?audio|inaudible|laughter|rires?|"
+    r"bruit|noise|coughing?|tousse?)$"
+)
+
+
+def is_nonspeech_transcript(text):
+    """True when the whole transcript is a Whisper non-speech annotation."""
+    s = (text or "").strip()
+    if not s:
+        return False
+    s = _SUBTITLE_CREDIT.sub("", s)
+    # Drop every bracketed / parenthesised annotation, then music marks.
+    while True:
+        cleaned = _BRACKET_ANN.sub("", s)
+        if cleaned == s:
+            break
+        s = cleaned
+    s = _MUSIC_MARK.sub(" ", s)
+    leftover = [t.strip(_NONSPEECH_PUNCT) for t in s.split()]
+    leftover = [t for t in leftover if t]
+    if not leftover:
+        return True
+    return all(_NONSPEECH_WORD.match(t) for t in leftover)
+
 def clean_transcription(payload):
-    """Whisper (Lemonade) returns ' texte\n': trim `text` and segment texts in place."""
+    """Whisper (Lemonade) returns ' texte\n': trim `text` and segment texts in place.
+
+    A whole transcript that is only a non-speech annotation ([MUSIC], (musique),
+    ♪, [BLANK_AUDIO], a subtitle credit…) becomes empty so the app skips the turn.
+    """
     if not isinstance(payload, dict):
         return payload
     if isinstance(payload.get("text"), str):
         payload["text"] = payload["text"].strip()
+        if is_nonspeech_transcript(payload["text"]):
+            payload["text"] = ""
     for segment in payload.get("segments") or []:
         if isinstance(segment, dict) and isinstance(segment.get("text"), str):
             segment["text"] = segment["text"].strip()
+            if is_nonspeech_transcript(segment["text"]):
+                segment["text"] = ""
     return payload
 
 
