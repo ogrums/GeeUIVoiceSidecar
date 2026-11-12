@@ -11,15 +11,30 @@ import emo_server as server
 
 
 class LabelTest(unittest.TestCase):
-    def test_emotion2vec_order_maps_to_six_labels(self):
+    def test_emotion2vec_order_keeps_disgusted(self):
         names = server.ONNX_LABELS
         mapped = [server.parse_label(name) for name in names]
         self.assertEqual([
-            "angry", "neutral", "fear", "happy", "neutral", "neutral", "sad",
+            "angry", "disgusted", "fear", "happy", "neutral", "neutral", "sad",
             "surprise", "neutral",
         ], mapped)
+        self.assertEqual(names[1], "disgusted")
         self.assertEqual(names[2], "fearful")
         self.assertEqual(names[7], "surprised")
+        self.assertEqual("disgusted", server.parse_label("disgust"))
+        self.assertEqual("disgusted", server.parse_label("Disgusted"))
+        self.assertIn("disgusted", server.LABELS)
+
+    def test_vote_fields_expose_raw_top_label(self):
+        fields = server.vote_fields("neutral", 0.81, "onnx", raw="other", raw_confidence=0.81)
+        self.assertEqual("neutral", fields["emotion"])
+        self.assertEqual(0.81, fields["emotion_confidence"])
+        self.assertEqual("onnx", fields["emotion_source"])
+        self.assertEqual("other", fields["emotion_raw"])
+        self.assertEqual(0.81, fields["emotion_raw_confidence"])
+        disgusted = server.vote_fields("disgusted", 0.99, "onnx", raw="disgusted", raw_confidence=0.99)
+        self.assertEqual("disgusted", disgusted["emotion"])
+        self.assertEqual("disgusted", disgusted["emotion_raw"])
 
 
 class AudioTest(unittest.TestCase):

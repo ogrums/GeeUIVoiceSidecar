@@ -1,6 +1,9 @@
 services:
   sidecar:
-    build: .
+    build:
+      context: .
+      args:
+        WITH_SPEAKER: "${WITH_SPEAKER:-1}"
     image: geeuivoice-sidecar
     ports:
       - "13306:13306"
@@ -8,6 +11,7 @@ services:
       - .env
     volumes:
       - models:/models
+      - data:/data
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -31,3 +35,5 @@ services:
 
 volumes:
   models:
+  # speakers.json (empreintes vocales, pas d'audio) et, plus tard, l'état de l'initiative
+  data:
