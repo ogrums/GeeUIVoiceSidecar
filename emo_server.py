@@ -23,6 +23,9 @@ from urllib.error import HTTPError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
+import vision
+
+LABELS = {"neutral", "happy", "sad", "angry", "fear", "surprise"}
 import speaker_id
 
 LABELS = {"neutral", "happy", "sad", "angry", "fear", "surprise", "disgusted"}
@@ -1077,7 +1080,7 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length)
         path = self.path.split("?")[0]
-        preview = body[:200].decode(errors="replace")
+        preview = "(image)" if b'"image_url"' in body[:65536] else body[:200].decode(errors="replace")
         log(f"POST {path} from {self.client_address[0]} {length}b {preview!r}")
         now = time.time()
         cfg = config()
@@ -1086,8 +1089,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/v1/chat/completions":
             content_type = self.headers.get("Content-Type") or "application/json"
-            if self._local_chat(body):
-                return
+            # A photo becomes "(RUX voit : …)": nanobot and the chat model stay text-only.
+            body = vision.rewrite(body, cfg["lemonade_host"], log=log)
             if cfg.get("nanobot_enabled"):
                 self._chat_via_nanobot(body, content_type)
             else:
