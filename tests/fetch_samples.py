@@ -22,7 +22,7 @@ RAW_LABELS = {
 }
 ROBOT = {
     "neutral": "neutral", "calm": "neutral", "happy": "happy", "sad": "sad",
-    "angry": "angry", "fearful": "fear", "disgusted": "neutral", "surprised": "surprise",
+    "angry": "angry", "fearful": "fear", "disgusted": "disgusted", "surprised": "surprise",
 }
 # Actrices (impair) et acteurs (pair), intensité normale puis forte. Le neutre
 # n'existe qu'en intensité normale : on choisit donc une troisième personne.

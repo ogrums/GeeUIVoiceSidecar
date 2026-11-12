@@ -97,6 +97,8 @@ Les variables vides ou absentes reprennent les défauts de `emo_server.py`. `EMO
 | `POST` | `/affect/audio` | Vote émotion sur un WAV |
 | `POST` | `/affect/text` | Injecte une émotion texte |
 | `POST` | `/route` | Choisit Kokoro ou CosyVoice selon l’émotion et la longueur |
+| `GET` | `/v1/speakers` | Personnes enregistrées, sans empreinte (clé `SIDECAR_ADMIN_KEY`) |
+| `DELETE` | `/v1/speakers/<id>` | Efface l’empreinte d’une personne (clé `SIDECAR_ADMIN_KEY`) |
 
 Le serveur écoute sur `0.0.0.0`, port 13306 par défaut.
 
@@ -132,6 +134,51 @@ En ligne de commande :
 ```bash
 curl -s -H "Authorization: Bearer $KEY" http://nimbus:13306/admin/skills | sed 's/<[^>]*>/ /g'
 curl -s -X POST -H "Authorization: Bearer $KEY" http://nimbus:13306/admin/skills/bonne-nuit/approve | grep -o "« bonne-nuit »[^<]*"
+## Vision à la demande
+
+Quand on demande « qu'est-ce que tu vois ? » ou « lis ça », l'app prend **une** photo et l'ajoute au tour de conversation, au format OpenAI :
+
+```json
+{"role": "user", "content": [
+  {"type": "text", "text": "qu'est-ce que tu vois ?"},
+  {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}}]}
+```
+
+Le sidecar demande une description à `VISION_MODEL` (sur `VISION_URL`, par défaut `LEMONADE_HOST`), puis remplace l'image par du texte : « (RUX voit : une tasse rouge sur un bureau…) qu'est-ce que tu vois ? ». nanobot et le modèle rapide restent en texte seul, l'historique de nanobot ne contient jamais d'image. La photo n'est ni écrite sur disque ni journalisée (le log affiche `(image)`).
+
+Sans `VISION_MODEL`, ou si le modèle ne répond pas, nanobot reçoit « (RUX a voulu regarder mais n'a pas pu : …) » et le dit simplement.
+
+Choix : la roadmap prévoyait une route `POST /v1/robot/see`. Une image dans `/v1/chat/completions` garde un seul appel côté app, la même voie (nanobot, repli Lemonade, streaming), et n'importe quel client OpenAI peut l'utiliser.
+
+Vérifier le modèle à la main :
+
+```bash
+IMG=$(base64 -w0 photo.jpg)
+curl -s $LEMONADE_HOST/chat/completions -H 'Content-Type: application/json' -d '{"model":"Gemma-4-E2B-it-GGUF","max_tokens":200,"messages":[{"role":"user","content":[{"type":"text","text":"Décris la photo en français."},{"type":"image_url","image_url":{"url":"data:image/jpeg;base64,'$IMG'"}}]}]}' | jq -r '.choices[0].message.content'
+## Qui parle (empreinte vocale)
+
+Optionnel, activé par `SPEAKER_MODEL` (le `.env.example` pointe vers `/models/wespeaker_en_voxceleb_resnet34_LM.onnx`, téléchargé au démarrage, 25 Mo, licence CC BY 4.0). Image sans cette dépendance : `WITH_SPEAKER=0 docker compose build`.
+
+- Chaque WAV de `/v1/audio/transcriptions` donne aussi une empreinte (sherpa-onnx, CPU, ~80 ms), en parallèle de Whisper et d'emotion2vec. La réponse gagne `speaker` (`paul` ou `invite`), `speaker_name` et `speaker_score`. L'app actuelle les ignore.
+- Score cosinus ≥ `SPEAKER_THRESHOLD` et écart ≥ `SPEAKER_MARGIN` avec la deuxième personne, sinon invité. Une phrase courte (< `SPEAKER_MIN_S`) ou un score douteux (≥ `SPEAKER_DOUBT`) garde la dernière personne si elle a parlé il y a moins de `SPEAKER_STICKY_S` secondes.
+- Le chat suivant part dans la session nanobot `rux-<id>` (ou `rux-invite`) avec le préfixe « (Paul parle, ton entendu : sad) ». Tant que personne n'est enregistré, tout reste comme avant (session `rux`). `SPEAKER_GUEST_ROUTE=lemonade` envoie les invités directement à Lemonade.
+- Phrases traitées par le sidecar, sans nanobot (réponse OpenAI JSON ou SSE, avec une balise d'émotion) :
+  - « Retiens ma voix, je suis Paul » ou « Je m'appelle Paul, retiens ma voix » : puis trois phrases d'au moins 2 s. Le robot vérifie qu'elles se ressemblent. « Annule » arrête ; 2 minutes sans rien aussi. On ne peut pas remplacer la voix de quelqu'un d'autre.
+  - « Oublie ma voix » : efface seulement l'empreinte de la personne reconnue.
+  - « Qui suis-je ? », « Tu me reconnais ? ».
+- `SPEAKERS_FILE` (`/data/speakers.json`, volume `data`, droits 600) : nom, empreinte moyenne (256 nombres), nombre de phrases, date, `consent: "voice"`. Aucun audio. Si le modèle change, les anciennes empreintes sont ignorées.
+
+```bash
+curl -H "Authorization: Bearer $SIDECAR_ADMIN_KEY" http://nimbus:13306/v1/speakers
+curl -X DELETE -H "Authorization: Bearer $SIDECAR_ADMIN_KEY" http://nimbus:13306/v1/speakers/paul
+```
+
+Test avec le vrai modèle (ignoré s'il manque) :
+
+```bash
+pip install -r requirements-speaker.txt
+python3 tests/fetch_samples.py      # extraits RAVDESS
+SPEAKER_TEST_MODEL=/chemin/wespeaker_en_voxceleb_resnet34_LM.onnx python3 -m unittest test_speaker -v
 ```
 
 ## Tests
