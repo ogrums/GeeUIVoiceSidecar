@@ -34,7 +34,7 @@ from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parent
 EMOTIONS = ("happy", "sad", "angry", "fear", "surprise", "neutral")
-RAW_NEUTRAL = ("disgusted", "other", "unknown")
+RAW_NEUTRAL = ("other", "unknown")
 MOCK_CLASSIFIER = os.environ.get("GEEUI_MOCK_CLASSIFIER", "1") != "0"
 RAVDESS_LABELS = ("neutral", "calm", "happy", "sad", "angry", "fearful", "disgusted", "surprised")
 
@@ -224,7 +224,7 @@ class MockHarness:
                 marker = ("GEEUI-" + label).encode()
                 if marker in audio:
                     # Les labels bruts non robot sont convertis exactement comme le
-                    # classifieur ONNX : parse_label les ramène à neutral.
+                    # classifieur ONNX : other/unknown → neutral ; disgusted is kept.
                     return self.server.parse_label(label), 0.93
             return original(audio)
         self.server.onnx_audio_vote = classifier
@@ -366,7 +366,7 @@ def run_mock():
 
 def expected_from_name(path):
     name = path.stem.lower()
-    aliases = {"fearful": "fear", "surprised": "surprise", "disgusted": "neutral", "other": "neutral", "unknown": "neutral"}
+    aliases = {"fearful": "fear", "surprised": "surprise", "disgusted": "disgusted", "other": "neutral", "unknown": "neutral"}
     for raw, emotion in aliases.items():
         if raw in name:
             return emotion
