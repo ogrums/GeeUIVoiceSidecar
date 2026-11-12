@@ -12,6 +12,9 @@ services:
     volumes:
       - models:/models
       - data:/data
+      # Initiative : lire la section « À suivre » de nanobot (lecture seule).
+      # Adapter le chemin du workspace nanobot sur l'hôte, puis NANOBOT_WORKSPACE=/nanobot-workspace.
+      # - /home/bob/nanobot/data/workspace:/nanobot-workspace:ro
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"

@@ -98,6 +98,9 @@ Les variables vides ou absentes reprennent les défauts de `emo_server.py`. `EMO
 | `POST` | `/affect/text` | Injecte une émotion texte |
 | `POST` | `/route` | Choisit Kokoro ou CosyVoice selon l’émotion et la longueur |
 | `GET` | `/v1/speakers` | Personnes enregistrées, sans empreinte (clé `SIDECAR_ADMIN_KEY`) |
+| `GET` | `/v1/robot/pending` | Phrases que le robot peut dire de lui-même (`{"items": [...]}`) |
+| `POST` | `/v1/robot/ack` | `{"id": …, "status": "spoken" \| "skipped"}` après la phrase |
+| `POST` | `/v1/robot/event` | Présence (toucher, capteur) : `{"type": "touch"}` |
 | `DELETE` | `/v1/speakers/<id>` | Efface l’empreinte d’une personne (clé `SIDECAR_ADMIN_KEY`) |
 
 Le serveur écoute sur `0.0.0.0`, port 13306 par défaut.
@@ -152,6 +155,27 @@ Chaque voix inscrite a un rôle dans `speakers.json` : `adulte` ou `enfant`. Une
 - **Enfant** : session `rux-<prénom>`, préfixe « (Léa parle, c'est un enfant) » ; la soul adapte le vocabulaire et refuse la maison. Par défaut pas de marche ni de retour à la base.
 - **Invité** : `SPEAKER_GUEST_ROUTE=lemonade` par défaut, donc pas de nanobot : pas de mémoire, pas d'outils (web, maison), seulement le modèle de chat. Avec `nanobot`, session `rux-invite` et la règle « rien d'écrit » du Dream.
 - Sans reconnaissance de la voix (`SPEAKER_MODEL` vide, ou personne d'inscrit) : rien ne change, pas de `allowed_actions`, l'app ne filtre pas.
+## Initiative (le robot parle le premier)
+
+Optionnel : `INITIATIVE_ENABLED=1`. Le sidecar décide quand parler, nanobot écrit quoi dire (session de la personne, message « (initiative de RUX, personne n'a parlé) … »). Si nanobot ne répond pas, une phrase toute faite.
+
+| Déclencheur | Quand |
+|---|---|
+| Bonjour | Premier tour du jour d'une personne connue après `GREETING_FROM` : le sidecar ajoute « (c'est la première fois aujourd'hui que Paul te parle : commence par lui dire bonjour) ». Rien n'est mis en file |
+| Rappel | nanobot écrit `[rappel:2026-11-10T19:30|sortir le linge]` ou `[rappel:+60|…]` (minutes) à la fin de sa réponse. Le sidecar le lit dans le flux et le range dans `reminders.json`. Dit à l'heure, même en heures calmes ou en « ne me dérange pas » ; jeté après `REMINDER_GRACE_MIN` |
+| Suivi | Ligne `- AAAA-MM-JJ | Prénom | sujet | quoi faire` de la section `## À suivre` de `memory/MEMORY.md`, le jour J (jusqu'à 2 jours après), une fois que la personne a parlé ce jour-là. Posé une seule fois |
+| Tension | 3 jours de suite avec au moins 10 phrases et plus de 40 % de `sad`/`angry`/`fear` (confiance ≥ 0,6). Une fois par semaine au plus |
+
+Garde-fous : `INITIATIVE_MAX_PER_DAY` par personne, `INITIATIVE_MIN_GAP_MIN` entre deux initiatives, `QUIET_HOURS`, une seule initiative en attente, jamais pour un invité. « Ne me dérange pas », « silence pendant deux heures », « tais-toi jusqu'à 17 h », « … jusqu'à demain » (fin des heures calmes) coupent les initiatives sauf les rappels ; « tu peux reparler » les remet. Ces phrases sont traitées par le sidecar.
+
+À `NIGHTLY_AT`, `/compact` pour chaque personne enregistrée puis `/dream` (remplace le cron système de nanobot).
+
+État dans `INITIATIVE_STATE_DIR` (`/data`) : `reminders.json`, `initiative_state.json`, `emotions.jsonl` (émotion, confiance, personne, horodatage ; pas de texte ni d'audio).
+
+```bash
+curl http://nimbus:13306/v1/robot/pending
+curl -X POST -H 'Content-Type: application/json' -d '{"id":"…","status":"spoken"}' http://nimbus:13306/v1/robot/ack
+```
 
 ## Tests
 
