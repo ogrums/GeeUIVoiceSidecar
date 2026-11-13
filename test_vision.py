@@ -77,17 +77,69 @@ class RewriteTests(unittest.TestCase):
         self.assertEqual({"url": "http://gpu:8000/v1/chat/completions", "key": "k"}, seen)
 
 
+class IntentTests(unittest.TestCase):
+    def test_seeing_phrases(self):
+        for phrase in (
+            "Qu'est ce que tu vois ?",
+            "tu vois quoi",
+            "regarde ça",
+            "décris ce que tu vois",
+            "what do you see",
+        ):
+            self.assertTrue(vision.is_vision_question(phrase), phrase)
+        self.assertFalse(vision.is_vision_question("quelle heure est-il"))
+        self.assertFalse(vision.is_vision_question("allume la lumière"))
+
+    def test_turn_detects_image_or_prefix(self):
+        self.assertTrue(vision.is_vision_turn(turn(), had_image=True))
+        self.assertTrue(vision.is_vision_turn({
+            "messages": [{"role": "user", "content": "(RUX voit : une tasse.) Qu'est-ce que tu vois ?"}]
+        }))
+        self.assertTrue(vision.is_vision_turn({
+            "messages": [{"role": "user", "content": "(ton entendu : neutral) tu vois quoi"}]
+        }))
+        self.assertFalse(vision.is_vision_turn({
+            "messages": [{"role": "user", "content": "quelle heure est-il"}]
+        }))
+
+
 class HttpTests(unittest.TestCase):
-    def test_nanobot_gets_text_only(self):
+    def test_vision_skips_nanobot(self):
         with mock.patch.dict(os.environ, {"VISION_MODEL": "Gemma-4-E2B-it-GGUF"}):
             with SidecarHarness({"NANOBOT_URL": "AUTO"}) as h:
                 status, _, _ = h.post_chat(turn())
                 self.assertEqual(200, status)
-                sent = json.loads(h.nanobot.requests[-1]["body"])["messages"][0]["content"]
-                self.assertEqual("(RUX voit : [neutral] lemonade) Qu'est-ce que tu vois ?", sent)
-                lem = json.loads(h.lemonade.requests[0]["body"])
-                self.assertEqual("Gemma-4-E2B-it-GGUF", lem["model"])
-                self.assertNotIn(b"base64", h.nanobot.requests[-1]["body"])
+                self.assertEqual([], h.nanobot.requests)
+                # First lemonade call describes the photo (it may contain the data URL).
+                # The chat turn that follows is text-only: "(RUX voit : ...)", no pixels.
+                bodies = [
+                    r["body"] if isinstance(r["body"], bytes) else r["body"].encode()
+                    for r in h.lemonade.requests
+                ]
+                joined = b"".join(bodies)
+                self.assertIn(b"Gemma-4-E2B-it-GGUF", joined)
+                chats = [b for b in bodies if b"(RUX voit :" in b]
+                self.assertTrue(chats, "expected a rewritten chat turn on Lemonade")
+                self.assertNotIn(b"base64", chats[0])
+
+    def test_vision_off_still_skips_nanobot(self):
+        with mock.patch.dict(os.environ, {"VISION_MODEL": ""}):
+            with SidecarHarness({"NANOBOT_URL": "AUTO"}) as h:
+                status, _, _ = h.post_chat(turn())
+                self.assertEqual(200, status)
+                self.assertEqual([], h.nanobot.requests)
+                joined = b"".join(r["body"] for r in h.lemonade.requests)
+                self.assertIn("la vue n'est pas branchée".encode(), joined)
+                self.assertNotIn(b"base64", joined)
+
+    def test_seeing_question_without_image_skips_nanobot(self):
+        with SidecarHarness({"NANOBOT_URL": "AUTO"}) as h:
+            status, _, _ = h.post_chat({
+                "model": "x",
+                "messages": [{"role": "user", "content": "tu vois quoi"}],
+            })
+            self.assertEqual(200, status)
+            self.assertEqual([], h.nanobot.requests)
 
 
 if __name__ == "__main__":

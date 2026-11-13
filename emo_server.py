@@ -1170,13 +1170,23 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/v1/chat/completions":
             content_type = self.headers.get("Content-Type") or "application/json"
-            # A photo becomes "(RUX voit : …)": nanobot and the chat model stay text-only.
+            # A photo becomes "(RUX voit : ...)" text. Seeing questions never go to
+            # nanobot (its file tools used to list a folder when asked "tu vois ?").
+            had_image = b'"image_url"' in body[:65536]
             body = vision.rewrite(body, cfg["lemonade_host"], log=log)
-            if cfg.get("nanobot_enabled"):
+            try:
+                data = json.loads(body.decode() or "{}")
+            except (ValueError, UnicodeDecodeError):
+                data = {}
+            if vision.is_vision_turn(data, had_image):
+                log(f"chat route=lemonade vision skip_nanobot had_image={had_image}")
+                self._stream(self._proxy(path, body, content_type))
+            elif cfg.get("nanobot_enabled"):
                 self._chat_via_nanobot(body, content_type)
             else:
                 self._stream(self._proxy(path, body, content_type))
             return
+
         if path == "/v1/audio/speech":
             self._speech(body, self.headers.get("Content-Type"))
             return

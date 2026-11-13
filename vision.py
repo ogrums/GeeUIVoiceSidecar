@@ -78,6 +78,51 @@ def has_image(data):
     return bool(message) and bool(split_user(message)[1])
 
 
+# Aligned with GeeUIVoice VisionIntent: looking means the camera, never files.
+VISION_PHRASES = (
+    "qu'est-ce que tu vois", "qu'est ce que tu vois", "que vois-tu", "que vois tu",
+    "tu vois quoi", "tu vois ca", "tu vois \u00e7a", "regarde ca", "regarde \u00e7a",
+    "regarde ce", "regarde cette", "regarde mon", "regarde ma", "regarde mes",
+    "regarde autour", "tu peux regarder", "lis ca", "lis \u00e7a", "lis ce", "lis cette",
+    "lis-moi", "lis moi", "d\u00e9cris ce que", "decris ce que", "c'est quoi ca",
+    "c'est quoi \u00e7a", "qu'est-ce que c'est que \u00e7a", "qu'est-ce que je tiens",
+    "qu'est ce que je tiens", "combien de doigts", "de quelle couleur est",
+    "what do you see", "look at this",
+)
+SEEN_PREFIX = "(RUX voit :"
+BLIND_PREFIX = "(RUX a voulu regarder"
+
+
+def _fold(text):
+    t = (text or "").lower().replace("\u2019", "'")
+    return " " + " ".join(t.split()) + " "
+
+
+def is_vision_question(text):
+    t = _fold(text)
+    return any(phrase in t for phrase in VISION_PHRASES)
+
+
+def is_vision_turn(data, had_image=False):
+    """True when this chat turn is about looking (photo present or a seeing question)."""
+    if had_image:
+        return True
+    if not isinstance(data, dict):
+        return False
+    message = last_user(data.get("messages"))
+    if not message:
+        return False
+    text, images = split_user(message)
+    if images:
+        return True
+    stripped = text.strip()
+    if stripped.startswith(SEEN_PREFIX) or stripped.startswith(BLIND_PREFIX):
+        return True
+    while stripped.startswith("(") and ")" in stripped[:120]:
+        stripped = stripped[stripped.index(")") + 1:].strip()
+    return is_vision_question(stripped)
+
+
 def describe(image_url, question, cfg, post=None):
     """Text description from the vision model. Raises on any error."""
     payload = {
