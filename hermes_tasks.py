@@ -114,7 +114,7 @@ def parse_intent(text):
         # Garder la casse et les accents d'origine : couper la phrase au même nombre de mots.
         rest = match.group("prompt").strip()
         prompt = _tail_original(text, rest) if rest else ""
-        prompt = _LEAD.sub("", prompt.strip(" ,.;:!?"))
+        prompt = _clean_prompt(prompt)
         return {"intent": "create", "prompt": prompt or None}
     if _READ_HERMES.search(folded) and not _STATUS.search(folded) or _READ_SHORT.match(folded):
         return {"intent": "read", "prompt": None}
@@ -123,12 +123,18 @@ def parse_intent(text):
     loose = _CREATE_LOOSE.search(folded)
     if loose:
         rest = loose.group("prompt").strip()
-        prompt = _LEAD.sub("", _tail_original(text, rest).strip(" ,.;:!?…"))
+        prompt = _clean_prompt(_tail_original(text, rest))
         return {"intent": "create", "prompt": prompt or None}
     # Phrase très courte qui nomme Hermes (« Hermès ? », « ou un Hermès ») : son état.
     if re.search(r"\b" + _HERMES + r"\b", folded) and len(re.findall(r"\w+", folded)) <= 4:
         return {"intent": "status", "prompt": None}
     return {"intent": None, "prompt": None}
+
+
+def _clean_prompt(prompt):
+    """Retire la ponctuation de tête et « de / d' / qu'il … » (« de… Compter » → « Compter »)."""
+    prompt = (prompt or "").replace("…", " ").strip(" ,.;:!?")
+    return _LEAD.sub("", prompt).strip(" ,.;:!?")
 
 
 def _tail_original(original, folded_tail):

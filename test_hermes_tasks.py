@@ -132,6 +132,9 @@ class IntentTests(unittest.TestCase):
         got = self.intent("Koffee a Hermès de côté les dossiers de premier niveau du dossier project.")
         self.assertEqual("create", got["intent"])
         self.assertEqual("côté les dossiers de premier niveau du dossier project", got["prompt"])
+        # Avec l'amorce Whisper, la transcription reprend « Confie à Hermès de… ».
+        self.assertEqual("Côté les dossiers de premier niveau",
+                         self.intent("Confie à Hermès de… Côté les dossiers de premier niveau.")["prompt"])
         self.assertEqual("status", self.intent("ou un Hermès")["intent"])
         self.assertEqual("status", self.intent("Hermès ?")["intent"])
         self.assertIsNone(self.intent("j'ai offert un foulard Hermès à ma mère pour Noël")["intent"])
