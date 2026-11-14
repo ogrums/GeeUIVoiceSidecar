@@ -144,9 +144,9 @@ Quand on demande « qu'est-ce que tu vois ? » ou « lis ça », l'app prend **u
   {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}}]}
 ```
 
-Le sidecar demande une description à `VISION_MODEL` (sur `VISION_URL`, par défaut `LEMONADE_HOST`), puis remplace l'image par du texte : « (RUX voit : une tasse rouge sur un bureau…) qu'est-ce que tu vois ? ». nanobot et le modèle rapide restent en texte seul, l'historique de nanobot ne contient jamais d'image. La photo n'est ni écrite sur disque ni journalisée (le log affiche `(image)`).
+Le sidecar demande une description à `VISION_MODEL` (sur `VISION_URL`, par défaut `LEMONADE_HOST`), puis remplace l'image par du texte : « (RUX voit : une tasse rouge sur un bureau…) qu'est-ce que tu vois ? ». le tour va ensuite au chat Lemonade (texte seul), pas à nanobot : « voir » ne doit pas lister un dossier. L'image n'entre jamais dans l'historique de nanobot. La photo n'est ni écrite sur disque ni journalisée (le log affiche `(image)`).
 
-Sans `VISION_MODEL`, ou si le modèle ne répond pas, nanobot reçoit « (RUX a voulu regarder mais n'a pas pu : …) » et le dit simplement.
+Sans `VISION_MODEL`, ou si le modèle ne répond pas, le sidecar envoie « (RUX a voulu regarder mais n'a pas pu : …) » au chat Lemonade — jamais à nanobot, pour que « voir » ne déclenche pas un listing de dossier.
 
 Choix : la roadmap prévoyait une route `POST /v1/robot/see`. Une image dans `/v1/chat/completions` garde un seul appel côté app, la même voie (nanobot, repli Lemonade, streaming), et n'importe quel client OpenAI peut l'utiliser.
 
