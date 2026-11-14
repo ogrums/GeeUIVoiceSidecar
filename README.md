@@ -155,6 +155,32 @@ Vérifier le modèle à la main :
 ```bash
 IMG=$(base64 -w0 photo.jpg)
 curl -s $LEMONADE_HOST/chat/completions -H 'Content-Type: application/json' -d '{"model":"Gemma-4-E2B-it-GGUF","max_tokens":200,"messages":[{"role":"user","content":[{"type":"text","text":"Décris la photo en français."},{"type":"image_url","image_url":{"url":"data:image/jpeg;base64,'$IMG'"}}]}]}' | jq -r '.choices[0].message.content'
+## Tâches confiées à Hermes
+
+Le robot peut confier une tâche à [Hermes Agent](https://hermes-agent.nousresearch.com/) (agent local, commandes dans un sandbox Docker) et en lire le résultat plus tard. Désactivé tant que `HERMES_URL` est vide.
+
+```bash
+# .env du sidecar (nimbus) : IP LAN, car le relais Hermes n'accepte que 192.168.2.0/24
+HERMES_URL=http://192.168.2.155:8642/v1
+HERMES_API_KEY=…   # API_SERVER_KEY de Hermes, jamais dans git
+```
+
+| Route | Rôle |
+|---|---|
+| `POST /hermes/intent` `{"text"}` | Reconnaît « confie/demande/délègue à Hermes … » (`create` + `prompt`), « lis le résultat » / « résultat Hermes » (`read`), « où en est Hermes » (`status`). Sans effet de bord, marche même Hermes désactivé. |
+| `POST /hermes/tasks` `{"prompt"}` ou `{"text"}` | Crée la tâche et le run Hermes (`POST /v1/runs`). 201, ou 502 si Hermes ne répond pas (tâche gardée en `failed`). |
+| `GET /hermes/tasks` | Liste (récente d'abord) + `unread` (terminées non lues) + `running`. Rafraîchit les statuts au plus toutes les `HERMES_POLL_SECONDS`. |
+| `GET /hermes/tasks/<id>` | Une tâche (`id` ou `latest`). |
+| `POST /hermes/tasks/<id>/read` | Marque lue. |
+| `POST /hermes/tasks/<id>/speak` | Texte court à dire : résumé du résultat par le modèle de conversation (Lemonade, `EMO_CHAT_MODEL` ou `HERMES_SUMMARY_MODEL`), repli sur le résultat brut nettoyé. Marque lue (sauf `{"mark_read": false}`). `latest` = dernière terminée non lue. |
+| `POST /hermes/tasks/<id>/stop` | Arrête le run. |
+
+Chaque tâche : `id`, `run_id`, `prompt`, `status` (`queued`, `running`, `completed`, `failed`), `created`, `finished`, `result`, `error`, `read`, `summary`. La liste est gardée dans `HERMES_TASKS_FILE` (`/data/hermes_tasks.json` dans l'image, volume `data`), limitée à `HERMES_MAX_TASKS`. Un fil de fond suit les tâches en cours.
+
+Le texte envoyé à Hermes encadre la demande : utiliser réellement l'outil terminal, ne rien inventer, dossiers `/workspace/data` et `/workspace/projects`. Utile avec un petit modèle (Qwen3-4B) qui sinon devine parfois la sortie des commandes.
+
+Sécurité : ces routes donnent à qui atteint le sidecar le droit de faire travailler Hermes (dans son sandbox). Pour les restreindre, définir `HERMES_TASKS_TOKEN` et le même jeton côté appli. La clé Hermes n'apparaît ni dans `/config` ni dans les réponses.
+
 ## Qui parle (empreinte vocale)
 
 Optionnel, activé par `SPEAKER_MODEL` (le `.env.example` pointe vers `/models/wespeaker_en_voxceleb_resnet34_LM.onnx`, téléchargé au démarrage, 25 Mo, licence CC BY 4.0). Image sans cette dépendance : `WITH_SPEAKER=0 docker compose build`.

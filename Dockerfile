@@ -20,7 +20,8 @@ EXPOSE 13306
 ENV EMO_AUDIO_ONNX=/models/emotion2vec_plus_base.onnx \
     EMO_AUDIO_HEAD=/models/emotion2vec_head.json \
     EMO_HOST=http://0.0.0.0:13306 \
-    SPEAKERS_FILE=/data/speakers.json
+    SPEAKERS_FILE=/data/speakers.json \
+    HERMES_TASKS_FILE=/data/hermes_tasks.json
 
 # entrypoint starts as root to chown the models volume, then drops to sidecar
 ENTRYPOINT ["/app/entrypoint.sh"]
