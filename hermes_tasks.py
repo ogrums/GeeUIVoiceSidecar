@@ -89,6 +89,11 @@ _CREATE = re.compile(
     r"(?:(?:ca|cela|une tache|la tache)\s+)?(?:a|au)\s+" + _HERMES + r"\b\W*"
     r"(?:(?:de|d'|qu'il|qu'elle|que|pour)\s*)?(?P<prompt>.*)$"
 )
+# Repli tolérant aux erreurs de transcription : « Koffee a Hermès de compter… »,
+# « … à Hermès, qu'il liste … ». Le verbe peut être mal entendu, « à Hermès de » suffit.
+_CREATE_LOOSE = re.compile(
+    r"\b(?:a|au)\s+" + _HERMES + r"\b\W*(?:de\s+|d'\s*|qu'il\s+|qu'elle\s+|pour\s+)(?P<prompt>.+)$"
+)
 _READ_HERMES = re.compile(r"\bresultats?\b.*\b" + _HERMES + r"\b|\b" + _HERMES + r"\b.*\bresultats?\b")
 _READ_SHORT = re.compile(
     r"^\W*(?:(?:rux|dobby)\W+)?(?:lis|lire|dis|donne|raconte)[- ]?(?:moi\s+)?"
@@ -109,13 +114,27 @@ def parse_intent(text):
         # Garder la casse et les accents d'origine : couper la phrase au même nombre de mots.
         rest = match.group("prompt").strip()
         prompt = _tail_original(text, rest) if rest else ""
-        prompt = _LEAD.sub("", prompt.strip(" ,.;:!?"))
+        prompt = _clean_prompt(prompt)
         return {"intent": "create", "prompt": prompt or None}
     if _READ_HERMES.search(folded) and not _STATUS.search(folded) or _READ_SHORT.match(folded):
         return {"intent": "read", "prompt": None}
     if _STATUS.search(folded):
         return {"intent": "status", "prompt": None}
+    loose = _CREATE_LOOSE.search(folded)
+    if loose:
+        rest = loose.group("prompt").strip()
+        prompt = _clean_prompt(_tail_original(text, rest))
+        return {"intent": "create", "prompt": prompt or None}
+    # Phrase très courte qui nomme Hermes (« Hermès ? », « ou un Hermès ») : son état.
+    if re.search(r"\b" + _HERMES + r"\b", folded) and len(re.findall(r"\w+", folded)) <= 4:
+        return {"intent": "status", "prompt": None}
     return {"intent": None, "prompt": None}
+
+
+def _clean_prompt(prompt):
+    """Retire la ponctuation de tête et « de / d' / qu'il … » (« de… Compter » → « Compter »)."""
+    prompt = (prompt or "").replace("…", " ").strip(" ,.;:!?")
+    return _LEAD.sub("", prompt).strip(" ,.;:!?")
 
 
 def _tail_original(original, folded_tail):
