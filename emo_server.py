@@ -61,6 +61,9 @@ DEFAULTS = {
     "EMO_ORT_PROVIDERS": "",
     "EMO_AUDIO_LABELS": ",".join(ONNX_LABELS),
     "EMO_STT_MODEL": "Whisper-Small",
+    # Texte d'amorce Whisper (champ multipart `prompt`) : noms propres à bien reconnaître
+    # (« Hermès », « RUX »). Vide = rien d'ajouté.
+    "EMO_STT_PROMPT": "",
     "EMO_CHAT_MODEL": "gemma4e-flash-e2b-FLM",
     "NANOBOT_URL": "",
     "NANOBOT_API_KEY": "",
@@ -125,18 +128,23 @@ mood = {"emotion": "neutral", "intensity": 0.0, "at": time.time()}
 
 
 
-def _with_model_field(body, content_type, model):
-    """Ajoute le champ multipart `model` (exigé par Lemonade) s'il manque."""
+def _with_form_field(body, content_type, name, value):
+    """Ajoute un champ texte multipart `name` avant la fin du formulaire."""
     match = re.search(r'boundary="?([^";]+)"?', content_type)
-    if not match or not model:
+    if not match or not value:
         return body
     closing = b"--" + match.group(1).encode() + b"--"
     index = body.rfind(closing)
     if index < 0:
         return body
-    field = (closing[:-2] + b'\r\nContent-Disposition: form-data; name="model"\r\n\r\n'
-             + model.encode() + b"\r\n")
+    field = (closing[:-2] + b'\r\nContent-Disposition: form-data; name="' + name.encode()
+             + b'"\r\n\r\n' + value.encode() + b"\r\n")
     return body[:index] + field + body[index:]
+
+
+def _with_model_field(body, content_type, model):
+    """Ajoute le champ multipart `model` (exigé par Lemonade) s'il manque."""
+    return _with_form_field(body, content_type, "model", model)
 
 
 def parse_label(raw):
@@ -799,6 +807,9 @@ class Handler(BaseHTTPRequestHandler):
         audio = parts["file"][1]
         if "model" not in fields:
             body = _with_model_field(body, content_type, config()["stt_model"])
+        if "prompt" not in fields and env("EMO_STT_PROMPT"):
+            # Amorce Whisper : sans elle, « Où en est Hermès ? » devient « ou un Hermès ».
+            body = _with_form_field(body, content_type, "prompt", env("EMO_STT_PROMPT"))
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=3)
         try:
             upstream = executor.submit(self._proxy, self.path.split("?")[0], body, content_type)

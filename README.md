@@ -177,6 +177,8 @@ HERMES_API_KEY=…   # API_SERVER_KEY de Hermes, jamais dans git
 
 Chaque tâche : `id`, `run_id`, `prompt`, `status` (`queued`, `running`, `completed`, `failed`), `created`, `finished`, `result`, `error`, `read`, `summary`. La liste est gardée dans `HERMES_TASKS_FILE` (`/data/hermes_tasks.json` dans l'image, volume `data`), limitée à `HERMES_MAX_TASKS`. Un fil de fond suit les tâches en cours.
 
+Reconnaissance vocale : Whisper-Small transcrit mal « Hermès » (« Où en est Hermès ? » → « ou un Hermès », « Confie à Hermès » → « Koffee a Hermès »). `EMO_STT_PROMPT` ajoute une amorce Whisper (voir `.env.example`) qui corrige ces cas, et `/hermes/intent` accepte aussi « … à Hermès de … » avec un verbe mal entendu et les phrases très courtes qui nomment Hermès (état).
+
 Le texte envoyé à Hermes encadre la demande : utiliser réellement l'outil terminal, ne rien inventer, dossiers `/workspace/data` et `/workspace/projects`. Utile avec un petit modèle (Qwen3-4B) qui sinon devine parfois la sortie des commandes.
 
 Sécurité : ces routes donnent à qui atteint le sidecar le droit de faire travailler Hermes (dans son sandbox). Pour les restreindre, définir `HERMES_TASKS_TOKEN` et le même jeton côté appli. La clé Hermes n'apparaît ni dans `/config` ni dans les réponses.

@@ -127,6 +127,15 @@ class IntentTests(unittest.TestCase):
         self.assertEqual("status", self.intent("Où en est Hermes ?")["intent"])
         self.assertEqual("status", self.intent("Hermes a fini ?")["intent"])
 
+    def test_misheard_phrases(self):
+        # Transcriptions Whisper réelles (voix Kokoro, sans amorce).
+        got = self.intent("Koffee a Hermès de côté les dossiers de premier niveau du dossier project.")
+        self.assertEqual("create", got["intent"])
+        self.assertEqual("côté les dossiers de premier niveau du dossier project", got["prompt"])
+        self.assertEqual("status", self.intent("ou un Hermès")["intent"])
+        self.assertEqual("status", self.intent("Hermès ?")["intent"])
+        self.assertIsNone(self.intent("j'ai offert un foulard Hermès à ma mère pour Noël")["intent"])
+
     def test_ordinary_sentences_are_ignored(self):
         for text in ("Demande à maman de venir", "donne-moi le résultat du match d'hier soir",
                      "quelle heure est-il", "", "lis une histoire"):
@@ -296,3 +305,12 @@ class SidecarHermesTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SttPromptFieldTests(unittest.TestCase):
+    def test_prompt_field_is_added_before_the_closing_boundary(self):
+        body = (b'--XX\r\nContent-Disposition: form-data; name="file"; filename="a.wav"\r\n'
+                b"Content-Type: audio/wav\r\n\r\nRIFF\r\n--XX--\r\n")
+        out = server._with_form_field(body, "multipart/form-data; boundary=XX", "prompt", "Hermès, RUX.")
+        self.assertIn('name="prompt"\r\n\r\nHermès, RUX.\r\n--XX--'.encode(), out)
+        self.assertEqual(body, server._with_form_field(body, "multipart/form-data; boundary=XX", "prompt", ""))
