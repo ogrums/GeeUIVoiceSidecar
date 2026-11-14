@@ -23,6 +23,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
+import hermes_tasks
 import vision
 
 LABELS = {"neutral", "happy", "sad", "angry", "fear", "surprise"}
@@ -1099,6 +1100,8 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
         if self._admin_skills(path):
             return
+        if hermes_tasks.route(self, "GET", path, log=log):
+            return
         if path == "/v1/models":
             with self._proxy(path) as response:
                 self._raw(response.status, response.read(), response.headers.get("Content-Type"))
@@ -1111,7 +1114,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, speakers().listing())
             return
         if path == "/config":
-            self._json(200, config())
+            self._json(200, {**config(), **hermes_tasks.public_config()})
             return
         if path != "/mood":
             self._json(404, {"error": "not found"})
@@ -1164,6 +1167,9 @@ class Handler(BaseHTTPRequestHandler):
         now = time.time()
         cfg = config()
         if self._admin_skills(path):
+            return
+        if hermes_tasks.route(self, "POST", path, body, lemonade_host=cfg["lemonade_host"],
+                              chat_model=cfg["chat_model"], log=log):
             return
         if path == "/v1/audio/transcriptions":
             self._transcribe(body)
@@ -1229,6 +1235,7 @@ if __name__ == "__main__":
     log(f"listen 0.0.0.0:{cfg['bind_port']} advertised {cfg['emo_host']}")
     log(json.dumps(cfg))
     eager_load_onnx()
+    hermes_tasks.start_poller(log=log)
     server = ThreadingHTTPServer(("0.0.0.0", cfg["bind_port"]), Handler)
     try:
         server.serve_forever()
